@@ -1,6 +1,11 @@
 package com.vui.vaporwave.ui.screens
 
 import androidx.compose.foundation.background
+import com.vui.vaporwave.ui.rememberIsLandscape
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -81,81 +86,116 @@ fun TrackDetailsScreen(
             }
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 32.dp)
-        ) {
-            item {
+        val isLandscape = rememberIsLandscape()
+        val trackNumberText = if (track.trackNumber > 0) track.trackNumber.toString() else "Unknown"
+        val rows = listOf(
+            "Album" to track.album,
+            "Genre" to (extended?.genre?.takeIf { it.isNotBlank() } ?: "Unknown"),
+            "Track Length" to track.formattedDuration,
+            "Recording Date" to (extended?.recordingDate?.takeIf { it.isNotBlank() } ?: "Unknown"),
+            "Track Number" to trackNumberText,
+            "Format" to formatOnly(track),
+            "Bitrate" to formatBitrateRow(track, extended),
+            "Size of File" to formatFileSize(track.sizeBytes),
+            "Path of Storage" to (extended?.filePath ?: track.contentUri?.toString() ?: "Unknown")
+        )
+
+        if (isLandscape) {
+            // Landscape: artwork/title/artist on the left, the detail rows on the right.
+            Row(modifier = Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 32.dp, vertical = 8.dp),
+                        .weight(0.38f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(200.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(64.dp)
-                        )
-                        if (track.artworkUri != null) {
-                            val context = LocalContext.current
-                            AsyncImage(
-                                model = remember(track.artworkUri) {
-                                    ImageRequest.Builder(context)
-                                        .data(track.artworkUri)
-                                        .size(Size(400, 400))
-                                        .build()
-                                },
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                        }
+                    TrackHero(track = track, artSize = 170.dp)
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(0.62f)
+                        .fillMaxHeight(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(rows) { (label, value) ->
+                        DetailRow(label = label, value = value)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 3
-                    )
-                    Text(
-                        text = track.artist,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
                 }
             }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        TrackHero(track = track, artSize = 200.dp)
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                }
 
-            val trackNumberText = if (track.trackNumber > 0) track.trackNumber.toString() else "Unknown"
-            val rows = listOf(
-                "Album" to track.album,
-                "Genre" to (extended?.genre?.takeIf { it.isNotBlank() } ?: "Unknown"),
-                "Track Length" to track.formattedDuration,
-                "Recording Date" to (extended?.recordingDate?.takeIf { it.isNotBlank() } ?: "Unknown"),
-                "Track Number" to trackNumberText,
-                "Format" to formatOnly(track),
-                "Bitrate" to formatBitrateRow(track, extended),
-                "Size of File" to formatFileSize(track.sizeBytes),
-                "Path of Storage" to (extended?.filePath ?: track.contentUri?.toString() ?: "Unknown")
-            )
-            items(rows) { (label, value) ->
-                DetailRow(label = label, value = value)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                items(rows) { (label, value) ->
+                    DetailRow(label = label, value = value)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                }
             }
         }
     }
+}
+
+/** Artwork + title + artist, shared by the portrait list header and the landscape left pane. */
+@Composable
+private fun TrackHero(track: AudioTrack, artSize: Dp) {
+    Box(
+        modifier = Modifier
+            .size(artSize)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.MusicNote,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.size(64.dp)
+        )
+        if (track.artworkUri != null) {
+            val context = LocalContext.current
+            AsyncImage(
+                model = remember(track.artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(track.artworkUri)
+                        .size(Size(400, 400))
+                        .build()
+                },
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(16.dp))
+    Text(
+        text = track.title,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Bold,
+        textAlign = TextAlign.Center,
+        maxLines = 3
+    )
+    Text(
+        text = track.artist,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center
+    )
 }
 
 @Composable

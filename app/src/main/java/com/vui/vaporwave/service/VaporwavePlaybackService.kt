@@ -2,6 +2,7 @@ package com.vui.vaporwave.service
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.Equalizer
 import android.os.Bundle
 import android.util.Log
@@ -54,6 +55,10 @@ class VaporwavePlaybackService : MediaSessionService() {
     // device's per-mixer-thread effect cap and silently wedge the whole audio output.
     private var equalizerSessionId = C.AUDIO_SESSION_ID_UNSET
     private var equalizerRebuildJob: Job? = null
+
+    // The session id last announced to the system via ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION, so
+    // it can be matched with a CLOSE broadcast when the session goes away or changes.
+    private var effectControlSessionId = C.AUDIO_SESSION_ID_UNSET
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     // Media3's own stuck-playback detector (the one onPlayerError eventually reports) waits a
@@ -83,6 +88,7 @@ class VaporwavePlaybackService : MediaSessionService() {
     private val playerListener = object : Player.Listener {
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             Log.i(TAG, "onAudioSessionIdChanged: $audioSessionId")
+            openAudioEffectSession(audioSessionId)
             scheduleEqualizerRebuild(audioSessionId)
         }
 
@@ -194,12 +200,14 @@ class VaporwavePlaybackService : MediaSessionService() {
         // reassignment on the common case where the stall happened at normal playback speed.
         pendingRestoreParameters = stuckParameters.takeIf { it != PlaybackParameters.DEFAULT }
 
+        closeAudioEffectSession()
         oldPlayer?.removeListener(playerListener)
         oldPlayer?.release()
 
         val newPlayer = buildExoPlayer()
         player = newPlayer
         mediaSession?.setPlayer(newPlayer)
+        openAudioEffectSession(newPlayer.audioSessionId)
         recreateEqualizer(newPlayer.audioSessionId)
 
         if (queueItems.isNotEmpty()) {
@@ -267,6 +275,7 @@ class VaporwavePlaybackService : MediaSessionService() {
 
         val exoPlayer = buildExoPlayer()
         this.player = exoPlayer
+        openAudioEffectSession(exoPlayer.audioSessionId)
         recreateEqualizer(exoPlayer.audioSessionId)
 
         // Intent to launch MainActivity when clicking on the system media notification
@@ -311,6 +320,7 @@ class VaporwavePlaybackService : MediaSessionService() {
         Log.i(TAG, "onDestroy() pid=${android.os.Process.myPid()}", Exception("onDestroy stack trace"))
         equalizerRebuildJob?.cancel()
         serviceScope.cancel()
+        closeAudioEffectSession()
         equalizer?.release()
         equalizer = null
         mediaSession?.run {
@@ -320,6 +330,33 @@ class VaporwavePlaybackService : MediaSessionService() {
         }
         player = null
         super.onDestroy()
+    }
+
+    // Tells the system (and any app listening for it -- Dolby/Dirac/Samsung sound panels, Wavelet,
+    // Poweramp EQ, MusicFX) that this player has an audio session they may attach effects to. The
+    // framework doesn't send this on a player's behalf: every media app has to broadcast it itself,
+    // which is what lets those DSPs process this app's audio the way they do for other players.
+    private fun openAudioEffectSession(audioSessionId: Int) {
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == effectControlSessionId) return
+        closeAudioEffectSession()
+        effectControlSessionId = audioSessionId
+        sendAudioEffectBroadcast(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION, audioSessionId)
+    }
+
+    private fun closeAudioEffectSession() {
+        val sessionId = effectControlSessionId
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET) return
+        effectControlSessionId = C.AUDIO_SESSION_ID_UNSET
+        sendAudioEffectBroadcast(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION, sessionId)
+    }
+
+    private fun sendAudioEffectBroadcast(action: String, audioSessionId: Int) {
+        sendBroadcast(
+            Intent(action)
+                .putExtra(AudioEffect.EXTRA_AUDIO_SESSION, audioSessionId)
+                .putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
+                .putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+        )
     }
 
     // Coalesces a burst of rapid-fire session-id notifications (e.g. repeatedly tapping a

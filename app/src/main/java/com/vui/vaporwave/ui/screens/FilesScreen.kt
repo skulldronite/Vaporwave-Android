@@ -54,6 +54,7 @@ import coil3.size.Size
 import com.vui.vaporwave.model.RecentAudioEntry
 import com.vui.vaporwave.theme.VaporCyan
 import com.vui.vaporwave.theme.VaporPink
+import com.vui.vaporwave.ui.rememberIsLandscape
 import java.util.Locale
 
 @Composable
@@ -66,12 +67,15 @@ fun FilesScreen(
 ) {
     // Held here (not per-row) so only one confirmation dialog can ever be on screen at a time.
     var pendingRemoval by remember { mutableStateOf<RecentAudioEntry?>(null) }
+    val isLandscape = rememberIsLandscape()
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+            // Padding goes *inside* the scroll: outside it, the 16dp margin clipped scrolled
+            // content short of the top and bottom edges, leaving a visible opaque strip there.
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Hero CTA: Pick ANY audio file
@@ -80,6 +84,50 @@ fun FilesScreen(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
         ) {
+            if (isLandscape) {
+                // Landscape: the card splits in half -- icon, title and description on the left,
+                // the action button on the right.
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = Icons.Default.FileOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(56.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "Open Any Audio File",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            text = "Pick FLAC, MP3, WAV, OPUS, OGG, M4A, or any audio file directly from internal storage, SD card, or USB OTG drive.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                            lineHeight = 20.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(24.dp))
+                    Button(
+                        onClick = onOpenFilePicker,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Select Audio File", fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else {
             Column(
                 modifier = Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -119,6 +167,7 @@ fun FilesScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Select Audio File", fontWeight = FontWeight.Bold)
                 }
+            }
             }
         }
 

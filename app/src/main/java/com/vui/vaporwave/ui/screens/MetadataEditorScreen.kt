@@ -5,6 +5,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import com.vui.vaporwave.ui.rememberIsLandscape
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -190,132 +195,165 @@ fun MetadataEditorScreen(
             )
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 32.dp)
-        ) {
-            item {
+        val isLandscape = rememberIsLandscape()
+
+        // Artwork with its pencil badge, and the field list, as lambdas so portrait (one scrolling
+        // list) and landscape (artwork left, fields right) share a single definition of each.
+        val artworkEditor: @Composable (Dp) -> Unit = { artSize ->
+            Box(modifier = Modifier.size(artSize), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .size(artSize)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(64.dp)
+                    )
+                    val bitmap = croppedArtwork
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else if (initialArtworkUri != null) {
+                        val context = LocalContext.current
+                        AsyncImage(
+                            model = remember(initialArtworkUri) {
+                                ImageRequest.Builder(context)
+                                    .data(initialArtworkUri)
+                                    .size(Size(400, 400))
+                                    .build()
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+                // Pencil badge, bottom-right of the art -- picks a new image, which then
+                // opens the cropper below once chosen.
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .size(36.dp)
+                ) {
+                    IconButton(onClick = { imagePickerLauncher.launch("image/*") }, enabled = !isSaving) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Change artwork",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+        val fieldsContent: @Composable () -> Unit = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (!isAlbumTarget) {
+                    LabeledField(label = "Title", value = title, onValueChange = { title = it }, enabled = !isSaving)
+                }
+                LabeledField(label = "Artist", value = artist, onValueChange = { artist = it }, enabled = !isSaving)
+                LabeledField(label = "Album", value = album, onValueChange = { album = it }, enabled = !isSaving)
+                LabeledField(label = "Album Artist", value = albumArtist, onValueChange = { albumArtist = it }, enabled = !isSaving)
+                LabeledField(label = "Genre", value = genre, onValueChange = { genre = it }, enabled = !isSaving)
+                LabeledField(label = "Recording Date", value = recordingDate, onValueChange = { recordingDate = it }, enabled = !isSaving)
+                if (!isAlbumTarget) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        LabeledField(
+                            label = "Track Number",
+                            value = trackNumber,
+                            onValueChange = { trackNumber = it.filter(Char::isDigit) },
+                            enabled = !isSaving,
+                            modifier = Modifier.weight(1f)
+                        )
+                        LabeledField(
+                            label = "Disk Number",
+                            value = discNumber,
+                            onValueChange = { discNumber = it.filter(Char::isDigit) },
+                            enabled = !isSaving,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (encodingType != null) {
+                        Column {
+                            Text(
+                                text = "Encoding Type",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = encodingType,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Read-only -- changing this would mean re-encoding the audio itself, not just its tags.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (isLandscape) {
+            Row(modifier = Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .weight(0.42f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
                         .padding(vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Box(modifier = Modifier.size(200.dp), contentAlignment = Alignment.Center) {
-                        Box(
-                            modifier = Modifier
-                                .size(200.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.outline,
-                                modifier = Modifier.size(64.dp)
-                            )
-                            val bitmap = croppedArtwork
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            } else if (initialArtworkUri != null) {
-                                val context = LocalContext.current
-                                AsyncImage(
-                                    model = remember(initialArtworkUri) {
-                                        ImageRequest.Builder(context)
-                                            .data(initialArtworkUri)
-                                            .size(Size(400, 400))
-                                            .build()
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                        }
-                        // Pencil badge, bottom-right of the art -- picks a new image, which then
-                        // opens the cropper below once chosen.
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            shadowElevation = 4.dp,
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(4.dp)
-                                .size(36.dp)
-                        ) {
-                            IconButton(onClick = { imagePickerLauncher.launch("image/*") }, enabled = !isSaving) {
-                                Icon(
-                                    imageVector = Icons.Default.Edit,
-                                    contentDescription = "Change artwork",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(24.dp))
+                    artworkEditor(220.dp)
                 }
-            }
-
-            item {
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .weight(0.58f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(bottom = 16.dp)
                 ) {
-                    if (!isAlbumTarget) {
-                        LabeledField(label = "Title", value = title, onValueChange = { title = it }, enabled = !isSaving)
-                    }
-                    LabeledField(label = "Artist", value = artist, onValueChange = { artist = it }, enabled = !isSaving)
-                    LabeledField(label = "Album", value = album, onValueChange = { album = it }, enabled = !isSaving)
-                    LabeledField(label = "Album Artist", value = albumArtist, onValueChange = { albumArtist = it }, enabled = !isSaving)
-                    LabeledField(label = "Genre", value = genre, onValueChange = { genre = it }, enabled = !isSaving)
-                    LabeledField(label = "Recording Date", value = recordingDate, onValueChange = { recordingDate = it }, enabled = !isSaving)
-                    if (!isAlbumTarget) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            LabeledField(
-                                label = "Track Number",
-                                value = trackNumber,
-                                onValueChange = { trackNumber = it.filter(Char::isDigit) },
-                                enabled = !isSaving,
-                                modifier = Modifier.weight(1f)
-                            )
-                            LabeledField(
-                                label = "Disk Number",
-                                value = discNumber,
-                                onValueChange = { discNumber = it.filter(Char::isDigit) },
-                                enabled = !isSaving,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        if (encodingType != null) {
-                            Column {
-                                Text(
-                                    text = "Encoding Type",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = encodingType,
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                                Text(
-                                    text = "Read-only -- changing this would mean re-encoding the audio itself, not just its tags.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                    fieldsContent()
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        artworkEditor(200.dp)
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
+
+                item { fieldsContent() }
             }
         }
     }

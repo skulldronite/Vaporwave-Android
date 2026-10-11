@@ -1,8 +1,20 @@
 package com.vui.vaporwave.ui.screens
 
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import androidx.compose.ui.platform.PlatformTextInputMethodRequest
+import androidx.compose.ui.platform.InterceptPlatformTextInput
+import androidx.compose.ui.platform.PlatformTextInputInterceptor
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +30,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -48,12 +66,15 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -69,6 +90,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.ui.components.MiniPlayer
+import com.vui.vaporwave.ui.rememberIsLandscape
 import com.vui.vaporwave.ui.components.TrackItem
 import kotlinx.coroutines.delay
 
@@ -80,6 +102,7 @@ import kotlinx.coroutines.delay
  * app's own VaporwaveTheme wrapper, so it follows dark mode and the vaporwave/dynamic-color
  * toggle exactly like every other screen instead of a fixed light palette.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun SearchScreen(
     query: String,
@@ -159,6 +182,9 @@ fun SearchScreen(
     // player's actual rendered height -- see the matching pattern/comment in LibraryScreen's
     // DetailTrackList, which this mirrors.
     val miniPlayerDensity = LocalDensity.current
+    val isLandscape = rememberIsLandscape()
+    val imeInsets = WindowInsets.ime
+    val isImeOpen by remember { derivedStateOf { imeInsets.getBottom(miniPlayerDensity) > 0 } }
     var miniPlayerHeight by remember { mutableStateOf(0.dp) }
 
     Surface(
@@ -177,6 +203,8 @@ fun SearchScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                // Landscape punch-hole/notch sits on a side edge -- keep the whole card clear of it.
+                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
                 // Full-screen overlay, so it never gets Scaffold's own bottom-bar inset handling
                 // -- without this, the last search result can end up behind a legacy 3-button
                 // nav bar (e.g. the Galaxy S9), which is tall and opaque unlike gesture nav's
@@ -203,32 +231,36 @@ fun SearchScreen(
                     )
                 }
 
-                TextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    placeholder = { Text(placeholderJoke) },
-                    singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(
-                        onSearch = { keyboardController?.hide() }
-                    ),
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { onQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear query")
+                // Landscape keyboards default to a fullscreen "extract" mode that covers the whole
+                // window, mini player included -- ask for the normal docked one instead.
+                InterceptPlatformTextInput(interceptor = NoExtractUiInterceptor) {
+                    TextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        placeholder = { Text(placeholderJoke) },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = { keyboardController?.hide() }
+                        ),
+                        trailingIcon = {
+                            if (query.isNotEmpty()) {
+                                IconButton(onClick = { onQueryChange("") }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear query")
+                                }
                             }
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(focusRequester)
-                )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester)
+                    )
+                }
             }
 
             when {
@@ -245,18 +277,44 @@ fun SearchScreen(
                 results.isEmpty() -> SearchPrompt("No tracks match \"$query\"")
 
                 else -> {
-                    SearchToolbar(
-                        sortOption = sortOption,
-                        onSortOptionSelected = { sortOption = it },
-                        sortDirection = sortDirection,
-                        onSortDirectionSelected = { sortDirection = it },
-                        onShuffleClick = {
-                            keyboardController?.hide()
-                            onShufflePlay(sortedResults)
-                        }
-                    )
-
                     val listState = rememberLazyListState()
+                    // Hides on scroll down, returns on any scroll up (and whenever the list is
+                    // back at its very top). The toolbar floats over the list rather than sitting
+                    // above it in the Column, with the list's top padding reserving its height --
+                    // so hiding/showing it animates only a translation/alpha and never changes
+                    // the list's own size mid-scroll (which would re-measure it every frame).
+                    var isToolbarVisible by remember { mutableStateOf(true) }
+                    var toolbarHeightPx by remember { mutableStateOf(0) }
+                    val toolbarHideFraction by animateFloatAsState(
+                        targetValue = if (isToolbarVisible) 0f else 1f,
+                        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                        label = "search_toolbar_hide"
+                    )
+                    val toolbarScrollConnection = remember {
+                        object : NestedScrollConnection {
+                            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                                // Only starts hiding once scrolled past the toolbar's own height, so
+                                // it stays put while the user is still near the top of the results.
+                                val scrolledPastToolbar = listState.firstVisibleItemIndex > 0 ||
+                                    listState.firstVisibleItemScrollOffset > toolbarHeightPx
+                                if (available.y < -3f && scrolledPastToolbar) {
+                                    isToolbarVisible = false
+                                } else if (available.y > 3f) {
+                                    isToolbarVisible = true
+                                }
+                                return Offset.Zero
+                            }
+                        }
+                    }
+                    LaunchedEffect(listState) {
+                        snapshotFlow { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
+                            .collect { atTop -> if (atTop) isToolbarVisible = true }
+                    }
+                    val toolbarHeightDp = with(miniPlayerDensity) { toolbarHeightPx.toDp() }
+
+                    // clipToBounds: the toolbar slides up *out of* this box and is cut off at its top
+                    // edge, instead of drawing over the search field above it while it leaves.
+                    Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
                     LazyColumn(
                         state = listState,
                         // A real (layout-shrinking) padding, not just contentPadding -- see the
@@ -266,8 +324,11 @@ fun SearchScreen(
                         // the mini player's transparent margins.
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(bottom = miniPlayerHeight),
-                        contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp, start = 8.dp, end = 8.dp),
+                            .nestedScroll(toolbarScrollConnection)
+                            // With the player hidden behind the landscape keyboard there's nothing
+                            // to clear below the list while it's up.
+                            .padding(bottom = if (isLandscape && isImeOpen) 0.dp else miniPlayerHeight),
+                        contentPadding = PaddingValues(bottom = 16.dp, top = toolbarHeightDp + 4.dp, start = 8.dp, end = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         itemsIndexed(items = sortedResults, key = { _, track -> track.id }) { index, track ->
@@ -313,6 +374,26 @@ fun SearchScreen(
                             )
                         }
                     }
+                    if (toolbarHideFraction < 1f) {
+                        SearchToolbar(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .onSizeChanged { toolbarHeightPx = it.height }
+                                .graphicsLayer {
+                                    translationY = -toolbarHeightPx * toolbarHideFraction
+                                }
+                                .background(MaterialTheme.colorScheme.background),
+                            sortOption = sortOption,
+                            onSortOptionSelected = { sortOption = it },
+                            sortDirection = sortDirection,
+                            onSortDirectionSelected = { sortDirection = it },
+                            onShuffleClick = {
+                                keyboardController?.hide()
+                                onShufflePlay(sortedResults)
+                            }
+                        )
+                    }
+                    }
                 }
             }
         }
@@ -334,9 +415,13 @@ fun SearchScreen(
                 // stayed pinned at the screen's true bottom, hidden behind the keyboard. That left
                 // the reserved gap sitting empty/unoccupied directly above the keyboard, showing
                 // as a plain solid-colour (background) bar where the mini player should have been.
+                // Landscape: the keyboard takes most of the screen, so the player stays put behind
+                // it instead of riding up on top of the little room that's left for results.
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .imePadding()
+                    // Keeps the player clear of a landscape punch-hole/notch, like the rest of the card.
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
+                    .then(if (isLandscape) Modifier else Modifier.imePadding())
                     .onSizeChanged { size ->
                         miniPlayerHeight = with(miniPlayerDensity) { size.height.toDp() }
                     }
@@ -344,6 +429,21 @@ fun SearchScreen(
         }
         }
     }
+}
+
+/** Turns off the IME's fullscreen/extract mode for the text field it wraps. */
+@OptIn(ExperimentalComposeUiApi::class)
+private val NoExtractUiInterceptor = PlatformTextInputInterceptor { request, nextHandler ->
+    nextHandler.startInputMethod(
+        object : PlatformTextInputMethodRequest by request {
+            override fun createInputConnection(outAttrs: EditorInfo): InputConnection {
+                val connection = request.createInputConnection(outAttrs)
+                outAttrs.imeOptions = outAttrs.imeOptions or
+                    EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
+                return connection
+            }
+        }
+    )
 }
 
 // Lives outside composition (rather than in a remember block) so it survives the search card
