@@ -827,6 +827,22 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putString(KEY_PLAY_STATS, array.toString()).apply()
     }
 
+    suspend fun loadSearchHistory(): List<String> = withContext(Dispatchers.IO) {
+        val raw = prefs.getString(KEY_SEARCH_HISTORY, null) ?: return@withContext emptyList()
+        try {
+            val array = JSONArray(raw)
+            (0 until array.length()).map { array.getString(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveSearchHistory(queries: List<String>) = withContext(Dispatchers.IO) {
+        val array = JSONArray()
+        queries.forEach { array.put(it) }
+        prefs.edit().putString(KEY_SEARCH_HISTORY, array.toString()).apply()
+    }
+
     suspend fun loadRecentlyOpenedFiles(): List<RecentAudioEntry> = withContext(Dispatchers.IO) {
         val raw = prefs.getString(KEY_RECENT_OPENED_FILES, null) ?: return@withContext emptyList()
         try {
@@ -893,6 +909,7 @@ class MusicRepository(private val context: Context) {
         private const val KEY_SEEN_SWIPE_HINT = "seen_swipe_hint"
         private const val KEY_PLAY_STATS = "play_stats_json"
         private const val KEY_RECENT_OPENED_FILES = "recent_opened_files_json"
+        private const val KEY_SEARCH_HISTORY = "search_history_json"
         private const val KEY_USE_VAPORWAVE_THEME = "use_vaporwave_theme"
         private const val KEY_USE_DARK_THEME = "use_dark_theme"
         private const val KEY_THEME_MODE = "theme_mode"

@@ -3,6 +3,7 @@ package com.vui.vaporwave.ui.screens
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,10 +59,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.ui.components.MiniPlayer
@@ -89,6 +94,11 @@ fun SearchScreen(
      * lifetime isn't reliable for that.
      */
     openSequence: Int,
+    /** Most-recent-first list of previously completed searches, shown while [query] is blank. */
+    searchHistory: List<String> = emptyList(),
+    onHistoryEntryClick: (String) -> Unit = {},
+    onRemoveHistoryEntry: (String) -> Unit = {},
+    onClearHistory: () -> Unit = {},
     onQueryChange: (String) -> Unit,
     onTrackClick: (AudioTrack) -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
@@ -145,6 +155,12 @@ fun SearchScreen(
             .also { lastPlaceholderJoke = it }
     }
 
+    // Measured (not a fixed guess) so the list's real bottom padding always matches the mini
+    // player's actual rendered height -- see the matching pattern/comment in LibraryScreen's
+    // DetailTrackList, which this mirrors.
+    val miniPlayerDensity = LocalDensity.current
+    var miniPlayerHeight by remember { mutableStateOf(0.dp) }
+
     Surface(
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -164,8 +180,13 @@ fun SearchScreen(
                 // Full-screen overlay, so it never gets Scaffold's own bottom-bar inset handling
                 // -- without this, the last search result can end up behind a legacy 3-button
                 // nav bar (e.g. the Galaxy S9), which is tall and opaque unlike gesture nav's
-                // thin inset.
-                .navigationBarsPadding()
+                // thin inset. Only needed when there's no MiniPlayer below to provide that
+                // clearance itself: MiniPlayer already applies its own navigationBarsPadding
+                // internally, which miniPlayerHeight's measurement (see below) already includes --
+                // applying it again here on top of that double-counted the inset, reserving a
+                // visibly-too-thick opaque gap above the mini player once the IME padding below
+                // stopped covering up the extra amount.
+                .then(if (currentTrack == null) Modifier.navigationBarsPadding() else Modifier)
                 .imePadding()
         ) {
             Row(
@@ -211,6 +232,14 @@ fun SearchScreen(
             }
 
             when {
+                query.isBlank() && searchHistory.isNotEmpty() -> RecentSearches(
+                    history = searchHistory,
+                    onEntryClick = onHistoryEntryClick,
+                    onRemoveEntry = onRemoveHistoryEntry,
+                    onClearAll = onClearHistory,
+                    bottomContentPadding = miniPlayerHeight
+                )
+
                 query.isBlank() -> SearchPrompt("Search your library by song, artist, album or format")
 
                 results.isEmpty() -> SearchPrompt("No tracks match \"$query\"")
@@ -230,7 +259,14 @@ fun SearchScreen(
                     val listState = rememberLazyListState()
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        // A real (layout-shrinking) padding, not just contentPadding -- see the
+                        // miniPlayerHeight comment above for why this needs to be measured, and
+                        // the matching comment in LibraryScreen's DetailTrackList for why
+                        // contentPadding alone isn't enough to keep rows from showing through
+                        // the mini player's transparent margins.
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = miniPlayerHeight),
                         contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp, start = 8.dp, end = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -292,7 +328,18 @@ fun SearchScreen(
                 onExpandClick = onExpandNowPlaying,
                 onDragDelta = onNowPlayingDragDelta,
                 onDragStopped = onNowPlayingDragStopped,
-                modifier = Modifier.align(Alignment.BottomCenter)
+                // imePadding() here (not just on the Column above) -- without it, this sits
+                // outside the Column's own imePadding scope, so opening the keyboard shifted the
+                // list's content up (reserving a gap at its bottom for this) while this bar itself
+                // stayed pinned at the screen's true bottom, hidden behind the keyboard. That left
+                // the reserved gap sitting empty/unoccupied directly above the keyboard, showing
+                // as a plain solid-colour (background) bar where the mini player should have been.
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .onSizeChanged { size ->
+                        miniPlayerHeight = with(miniPlayerDensity) { size.height.toDp() }
+                    }
             )
         }
         }
@@ -452,6 +499,68 @@ private fun SearchToolbar(
         }
 
         ShuffleDiceButton(onShuffleClick = onShuffleClick)
+    }
+}
+
+@Composable
+private fun RecentSearches(
+    history: List<String>,
+    onEntryClick: (String) -> Unit,
+    onRemoveEntry: (String) -> Unit,
+    onClearAll: () -> Unit,
+    bottomContentPadding: Dp
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Recent searches",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(onClick = onClearAll) {
+                Text("Clear all")
+            }
+        }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = bottomContentPadding)
+        ) {
+            items(items = history, key = { it }) { entry ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                        .clickable { onEntryClick(entry) },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp).size(20.dp)
+                    )
+                    Text(
+                        text = entry,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f).padding(vertical = 14.dp)
+                    )
+                    IconButton(onClick = { onRemoveEntry(entry) }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Remove from recent searches",
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
