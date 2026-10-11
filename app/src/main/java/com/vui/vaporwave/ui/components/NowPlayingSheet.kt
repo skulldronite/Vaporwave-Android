@@ -42,6 +42,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import com.vui.vaporwave.ui.rememberIsLandscape
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -192,7 +196,7 @@ fun NowPlayingSheet(
     if (track == null) return
 
     val volumeState = rememberVolumeState()
-    var isVolumeSliderVisible by remember { mutableStateOf(false) }
+    val audioManager = LocalContext.current.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     var isOverflowMenuExpanded by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showLyrics by remember { mutableStateOf(false) }
@@ -221,359 +225,322 @@ fun NowPlayingSheet(
         )
     }
 
-    Surface(
-        modifier = modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .systemBarsPadding()
-                .padding(horizontal = 24.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
+    val isLandscape = rememberIsLandscape()
+
+    // The sheet's sections are lambdas so portrait (one scrolling column) and landscape (artwork
+    // and title on the left, everything else on the right) lay out the very same content.
+    val headerSection: @Composable ColumnScope.() -> Unit = {
+        // Header: Dismiss Button & Icon Actions
+        Row(
+            modifier = headerDragModifier
+                .fillMaxWidth()
+                .padding(vertical = if (isLandscape) 4.dp else 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Header: Dismiss Button & Icon Actions
-            Row(
-                modifier = headerDragModifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Collapse",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
-                // Shifted right of where the row's own edge naturally lands (bleeding a bit into
-                // the sheet's 24dp side margin), closer to the true edge of the screen.
-                Row(modifier = Modifier.offset(x = 12.dp)) {
-                    IconButton(onClick = { isVolumeSliderVisible = !isVolumeSliderVisible }) {
-                        VolumeLevelIcon(
-                            level = when {
-                                volumeState.volumePercent <= 30 -> 1
-                                volumeState.volumePercent <= 70 -> 2
-                                else -> 3
-                            },
-                            tint = if (isVolumeSliderVisible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    IconButton(onClick = onOpenEffects) {
-                        PlaybackVisualizerIcon(
-                            isPlaying = isPlaying,
-                            playbackSpeed = playbackSpeed,
-                            tint = if (isSlowedAndReverb || isNightcoreSpeed(playbackSpeed)) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-
-                    Box {
-                        IconButton(onClick = { isOverflowMenuExpanded = true }) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "More options",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = isOverflowMenuExpanded,
-                            onDismissRequest = { isOverflowMenuExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Album") },
-                                leadingIcon = { Icon(Icons.Default.Album, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    onOpenAlbum()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Artist") },
-                                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    onOpenArtist()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    showDeleteConfirmation = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Share") },
-                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    onShare()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Settings") },
-                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    onOpenSettings()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Track Details") },
-                                leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    onOpenTrackDetails()
-                                }
-                            )
-                        }
-                    }
-                }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Collapse",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(32.dp)
+                )
             }
 
-            // Volume slider -- expands to the sheet's full width (rather than a small popup) so
-            // its step spacing is as spread out as the device's real STREAM_MUSIC range allows,
-            // and animates open/closed instead of just appearing/vanishing.
-            AnimatedVisibility(
-                visible = isVolumeSliderVisible,
-                enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
-                exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Slider(
-                        value = volumeState.volume.toFloat(),
-                        onValueChange = { volumeState.applyVolume(it.roundToInt()) },
-                        valueRange = 0f..volumeState.maxVolume.toFloat(),
-                        steps = (volumeState.maxVolume - 1).coerceAtLeast(0),
-                        colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                        ),
-                        modifier = Modifier.weight(1f)
+            // Shifted right of where the row's own edge naturally lands (bleeding a bit into
+            // the sheet's 24dp side margin), closer to the true edge of the screen.
+            Row(modifier = Modifier.offset(x = 12.dp)) {
+                // Hands volume off to Android's own volume panel (same one the hardware rocker shows)
+                // rather than a custom slider of our own; ADJUST_SAME changes nothing, it just
+                // makes the panel appear.
+                IconButton(onClick = {
+                    audioManager.adjustStreamVolume(
+                        AudioManager.STREAM_MUSIC,
+                        AudioManager.ADJUST_SAME,
+                        AudioManager.FLAG_SHOW_UI
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        // Shown as its 0-100 equivalent rather than the device's raw step index
-                        // (e.g. step 7 of a 15-step range reads as "47", not "7") -- the real
-                        // step count still drives the slider's actual granularity above.
-                        text = volumeState.volumePercent.toString(),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.width(32.dp),
-                        textAlign = TextAlign.Center
+                }) {
+                    VolumeLevelIcon(
+                        level = when {
+                            volumeState.volumePercent <= 30 -> 1
+                            volumeState.volumePercent <= 70 -> 2
+                            else -> 3
+                        },
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Large Album Artwork with Vaporwave Ambient Glow -- a halo that pulses while playing
-            // (a slow breathing loop layered on top of an eased on/off envelope, so starting or
-            // stopping playback isn't an abrupt cut) and settles to a small static glow otherwise.
-            val glowTransition = rememberInfiniteTransition(label = "art_glow")
-            val glowPulse by glowTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(1400, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "art_glow_pulse"
-            )
-            val playingEnvelope by animateFloatAsState(
-                targetValue = if (isPlaying) 1f else 0f,
-                animationSpec = tween(500),
-                label = "art_glow_envelope"
-            )
-            val glowElevation = 10.dp + 18.dp * glowPulse * playingEnvelope
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .aspectRatio(1f)
-                    .shadow(
-                        // Colored ambient/spot shadows need a multi-pass fragment shader; keeping
-                        // elevation modest avoids GPU pipeline stalls during sheet drag gestures.
-                        elevation = glowElevation,
-                        shape = RoundedCornerShape(24.dp),
-                        ambientColor = VaporPink,
-                        spotColor = VaporCyan
+                IconButton(onClick = onOpenEffects) {
+                    PlaybackVisualizerIcon(
+                        isPlaying = isPlaying,
+                        playbackSpeed = playbackSpeed,
+                        tint = if (isSlowedAndReverb || isNightcoreSpeed(playbackSpeed)) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                VaporPink.copy(alpha = 0.85f),
-                                VaporCyan.copy(alpha = 0.85f),
-                                VaporMint.copy(alpha = 0.85f)
-                            )
-                        )
-                    )
-                    // Tapping toggles synced lyrics over the artwork -- a no-op when this track
-                    // has none, per the feature's own spec, rather than showing an empty view.
-                    .clickable(enabled = lyrics != null) { showLyrics = !showLyrics },
-                contentAlignment = Alignment.Center
-            ) {
-                val artworkPlaceholder: @Composable () -> Unit = {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
+                }
+
+                Box {
+                    IconButton(onClick = { isOverflowMenuExpanded = true }) {
                         Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(96.dp)
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "V A P O R W A V E",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                letterSpacing = 4.sp,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = MaterialTheme.colorScheme.onPrimary
+                    }
+                    DropdownMenu(
+                        expanded = isOverflowMenuExpanded,
+                        onDismissRequest = { isOverflowMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Album") },
+                            leadingIcon = { Icon(Icons.Default.Album, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onOpenAlbum()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Artist") },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onOpenArtist()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                showDeleteConfirmation = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share") },
+                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onShare()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onOpenSettings()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Track Details") },
+                            leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onOpenTrackDetails()
+                            }
                         )
                     }
                 }
+            }
+        }
+    }
 
-                Crossfade(targetState = showLyrics && lyrics != null, label = "artwork_lyrics") { showingLyrics ->
-                    val currentLyrics = lyrics
-                    if (showingLyrics && currentLyrics != null) {
-                        // Luminance-based rather than keyed off ThemeMode/useOledBlack/etc
-                        // directly -- this reads correctly no matter which of Neon, Material You,
-                        // standard Material 3, or OLED black actually resolved the current
-                        // background, rather than needing to special-case each one here too.
-                        val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-                        val lyricsBackground = if (isDarkSurface) LyricsDarkBackground else Color.White
-                        val lyricsTextColor = if (isDarkSurface) Color.White else Color.Black
+    val artSection: @Composable ColumnScope.(Modifier) -> Unit = { artSizeModifier ->
+        // Large Album Artwork with Vaporwave Ambient Glow -- a halo that pulses while playing
+        // (a slow breathing loop layered on top of an eased on/off envelope, so starting or
+        // stopping playback isn't an abrupt cut) and settles to a small static glow otherwise.
+        val glowTransition = rememberInfiniteTransition(label = "art_glow")
+        val glowPulse by glowTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1400, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "art_glow_pulse"
+        )
+        val playingEnvelope by animateFloatAsState(
+            targetValue = if (isPlaying) 1f else 0f,
+            animationSpec = tween(500),
+            label = "art_glow_envelope"
+        )
+        val glowElevation = 10.dp + 18.dp * glowPulse * playingEnvelope
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(lyricsBackground)
-                        ) {
-                            when (currentLyrics) {
-                                is LyricsResult.Synced -> LyricsView(
-                                    lines = currentLyrics.lines,
-                                    positionProvider = positionProvider,
-                                    onSeekTo = onSeekTo,
-                                    textColor = lyricsTextColor,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(20.dp)
-                                )
-                                is LyricsResult.Plain -> PlainLyricsView(
-                                    text = currentLyrics.text,
-                                    textColor = lyricsTextColor,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(20.dp)
-                                )
-                            }
-                        }
-                    } else {
-                        Box(contentAlignment = Alignment.Center) {
-                            artworkPlaceholder()
-                            if (track.artworkUri != null) {
-                                // A real, explicitly-sized ImageRequest for full-resolution
-                                // display (unlike the 128x128 list-row thumbnails) -- combined
-                                // with the size-aware Keyer registered in VaporwaveApplication,
-                                // this no longer gets served back whatever smaller bitmap a list
-                                // row already cached for the same URI.
-                                val hiResContext = LocalContext.current
-                                AsyncImage(
-                                    model = remember(track.artworkUri) {
-                                        ImageRequest.Builder(hiResContext)
-                                            .data(track.artworkUri)
-                                            .size(CoilSize(1024, 1024))
-                                            .build()
-                                    },
-                                    contentDescription = "Album Artwork",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                        }
-                    }
-                }
-
-                if (lyrics != null && !showLyrics) {
+        Box(
+            modifier = artSizeModifier
+                .shadow(
+                    // Colored ambient/spot shadows need a multi-pass fragment shader; keeping
+                    // elevation modest avoids GPU pipeline stalls during sheet drag gestures.
+                    elevation = glowElevation,
+                    shape = RoundedCornerShape(24.dp),
+                    ambientColor = VaporPink,
+                    spotColor = VaporCyan
+                )
+                .clip(RoundedCornerShape(24.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            VaporPink.copy(alpha = 0.85f),
+                            VaporCyan.copy(alpha = 0.85f),
+                            VaporMint.copy(alpha = 0.85f)
+                        )
+                    )
+                )
+                // Tapping toggles synced lyrics over the artwork -- a no-op when this track
+                // has none, per the feature's own spec, rather than showing an empty view.
+                .clickable(enabled = lyrics != null) { showLyrics = !showLyrics },
+            contentAlignment = Alignment.Center
+        ) {
+            val artworkPlaceholder: @Composable () -> Unit = {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(96.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (lyrics is LyricsResult.Synced) "Synced Lyrics" else "Lyrics",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(10.dp)
-                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                        text = "V A P O R W A V E",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            letterSpacing = 4.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Crossfade(targetState = showLyrics && lyrics != null, label = "artwork_lyrics") { showingLyrics ->
+                val currentLyrics = lyrics
+                if (showingLyrics && currentLyrics != null) {
+                    // Luminance-based rather than keyed off ThemeMode/useOledBlack/etc
+                    // directly -- this reads correctly no matter which of Neon, Material You,
+                    // standard Material 3, or OLED black actually resolved the current
+                    // background, rather than needing to special-case each one here too.
+                    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                    val lyricsBackground = if (isDarkSurface) LyricsDarkBackground else Color.White
+                    val lyricsTextColor = if (isDarkSurface) Color.White else Color.Black
 
-            // Track Title & Artist
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .basicMarquee()
-            )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(lyricsBackground)
+                    ) {
+                        when (currentLyrics) {
+                            is LyricsResult.Synced -> LyricsView(
+                                lines = currentLyrics.lines,
+                                positionProvider = positionProvider,
+                                onSeekTo = onSeekTo,
+                                textColor = lyricsTextColor,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(20.dp)
+                            )
+                            is LyricsResult.Plain -> PlainLyricsView(
+                                text = currentLyrics.text,
+                                textColor = lyricsTextColor,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(20.dp)
+                            )
+                        }
+                    }
+                } else {
+                    Box(contentAlignment = Alignment.Center) {
+                        artworkPlaceholder()
+                        if (track.artworkUri != null) {
+                            // A real, explicitly-sized ImageRequest for full-resolution
+                            // display (unlike the 128x128 list-row thumbnails) -- combined
+                            // with the size-aware Keyer registered in VaporwaveApplication,
+                            // this no longer gets served back whatever smaller bitmap a list
+                            // row already cached for the same URI.
+                            val hiResContext = LocalContext.current
+                            AsyncImage(
+                                model = remember(track.artworkUri) {
+                                    ImageRequest.Builder(hiResContext)
+                                        .data(track.artworkUri)
+                                        .size(CoilSize(1024, 1024))
+                                        .build()
+                                },
+                                contentDescription = "Album Artwork",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                    }
+                }
+            }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            if (lyrics != null && !showLyrics) {
+                Text(
+                    text = if (lyrics is LyricsResult.Synced) "Synced Lyrics" else "Lyrics",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(10.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+        }
+    }
 
-            Text(
-                text = "${track.artist} • ${track.album}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .basicMarquee()
-            )
+    val titleSection: @Composable ColumnScope.() -> Unit = {
+        // Track Title & Artist
+        Text(
+            text = track.title,
+            // Landscape drops a size so the whole right half fits without scrolling.
+            style = if (isLandscape) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            modifier = Modifier
+                .fillMaxWidth()
+                .basicMarquee()
+        )
 
-            Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(if (isLandscape) 2.dp else 6.dp))
 
-            // Slowed & Favourite & Nightcore sit in a cluster centered on the heart -- Slowed and
-            // Nightcore are the same size, so centering the cluster as a whole (rather than
-            // spreading three unevenly-sized groups across the row with SpaceBetween, which used
-            // to leave the heart off-center) puts the heart exactly in the middle. Add to Playlist
-            // is unrelated to that cluster and stays pinned to the row's trailing edge.
-            // Slowed/Nightcore are an exclusive pair, not independent toggles: tapping the active
-            // one turns it back off (Standard, 1.0x); tapping the other one switches straight to
-            // it. There's no separate "Standard" button any more -- 1.0x is just the state where
-            // neither preset is selected.
-            Box(modifier = Modifier.fillMaxWidth()) {
-                val isSlowed = abs(playbackSpeed - 0.85f) < 0.01f
-                val isNightcore = abs(playbackSpeed - 1.25f) < 0.01f
+        Text(
+            text = "${track.artist} • ${track.album}",
+            style = if (isLandscape) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            modifier = Modifier
+                .fillMaxWidth()
+                .basicMarquee()
+        )
+    }
 
-                // Mirrors Add to Playlist's placement on the opposite edge -- both are plain
-                // IconButtons flush against the Box's own bounds, so they land the same distance
-                // from their respective edges with no extra spacing math needed.
+    val controlsSection: @Composable ColumnScope.() -> Unit = {
+        // Slowed & Favourite & Nightcore sit in a cluster centered on the heart -- Slowed and
+        // Nightcore are the same size, so centering the cluster as a whole (rather than
+        // spreading three unevenly-sized groups across the row with SpaceBetween, which used
+        // to leave the heart off-center) puts the heart exactly in the middle. Add to Playlist
+        // is unrelated to that cluster and stays pinned to the row's trailing edge.
+        // Slowed/Nightcore are an exclusive pair, not independent toggles: tapping the active
+        // one turns it back off (Standard, 1.0x); tapping the other one switches straight to
+        // it. There's no separate "Standard" button any more -- 1.0x is just the state where
+        // neither preset is selected.
+        Box(modifier = Modifier.fillMaxWidth()) {
+            val isSlowed = abs(playbackSpeed - 0.85f) < 0.01f
+            val isNightcore = abs(playbackSpeed - 1.25f) < 0.01f
+
+            // Mirrors Add to Playlist's placement on the opposite edge -- both are plain
+            // IconButtons flush against the Box's own bounds, so they land the same distance
+            // from their respective edges with no extra spacing math needed.
+            // One-handed reach isn't offered in landscape, so its toggle is hidden there.
+            if (!isLandscape) {
                 IconButton(
                     onClick = onToggleOneHandedMode,
                     modifier = Modifier.align(Alignment.CenterEnd)
@@ -583,263 +550,331 @@ fun NowPlayingSheet(
                         modifier = Modifier.size(22.dp)
                     )
                 }
+            }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.Center),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PresetIconButton(
-                        icon = Icons.Default.Bedtime,
-                        label = "Slowed",
-                        selected = isSlowed,
-                        onClick = {
-                            if (isSlowed) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(0.85f, 0.85f)
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    // A small celebration when the track is newly favourited -- a bounce, a little
-                    // wiggle, and a ring pulsing outward and fading -- all only on the way in. An
-                    // unfavourite is a plain, unanimated icon swap, no effects.
-                    val heartScale = remember { Animatable(1f) }
-                    val heartRotation = remember { Animatable(0f) }
-                    val heartRingProgress = remember { Animatable(0f) }
-                    LaunchedEffect(isFavourite) {
-                        if (isFavourite) {
-                            heartScale.snapTo(0.5f)
-                            heartRotation.snapTo(-20f)
-                            heartRingProgress.snapTo(0f)
-                            launch { heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)) }
-                            launch { heartRotation.animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)) }
-                            launch { heartRingProgress.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) }
-                        } else {
-                            heartScale.snapTo(1f)
-                            heartRotation.snapTo(0f)
-                            heartRingProgress.snapTo(0f)
-                        }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PresetIconButton(
+                    icon = Icons.Default.Bedtime,
+                    label = "Slowed",
+                    selected = isSlowed,
+                    onClick = {
+                        if (isSlowed) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(0.85f, 0.85f)
                     }
-                    Box(contentAlignment = Alignment.Center) {
-                        if (heartRingProgress.value > 0f && heartRingProgress.value < 1f) {
-                            Canvas(modifier = Modifier.size(48.dp)) {
-                                val ringAlpha = 1f - heartRingProgress.value
-                                val ringRadius = size.minDimension / 2f * (0.35f + heartRingProgress.value * 0.65f)
-                                drawCircle(
-                                    color = VaporPink.copy(alpha = ringAlpha * 0.6f),
-                                    radius = ringRadius,
-                                    style = Stroke(width = size.minDimension * 0.05f)
-                                )
-                            }
-                        }
-                        IconButton(onClick = onToggleFavourite) {
-                            Icon(
-                                imageVector = if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = if (isFavourite) "Remove from Favourites" else "Add to Favourites",
-                                tint = if (isFavourite) VaporPink else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .graphicsLayer {
-                                        scaleX = heartScale.value
-                                        scaleY = heartScale.value
-                                        rotationZ = heartRotation.value
-                                    }
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // A small celebration when the track is newly favourited -- a bounce, a little
+                // wiggle, and a ring pulsing outward and fading -- all only on the way in. An
+                // unfavourite is a plain, unanimated icon swap, no effects.
+                val heartScale = remember { Animatable(1f) }
+                val heartRotation = remember { Animatable(0f) }
+                val heartRingProgress = remember { Animatable(0f) }
+                LaunchedEffect(isFavourite) {
+                    if (isFavourite) {
+                        heartScale.snapTo(0.5f)
+                        heartRotation.snapTo(-20f)
+                        heartRingProgress.snapTo(0f)
+                        launch { heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)) }
+                        launch { heartRotation.animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)) }
+                        launch { heartRingProgress.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) }
+                    } else {
+                        heartScale.snapTo(1f)
+                        heartRotation.snapTo(0f)
+                        heartRingProgress.snapTo(0f)
+                    }
+                }
+                Box(contentAlignment = Alignment.Center) {
+                    if (heartRingProgress.value > 0f && heartRingProgress.value < 1f) {
+                        Canvas(modifier = Modifier.size(48.dp)) {
+                            val ringAlpha = 1f - heartRingProgress.value
+                            val ringRadius = size.minDimension / 2f * (0.35f + heartRingProgress.value * 0.65f)
+                            drawCircle(
+                                color = VaporPink.copy(alpha = ringAlpha * 0.6f),
+                                radius = ringRadius,
+                                style = Stroke(width = size.minDimension * 0.05f)
                             )
                         }
                     }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    PresetIconButton(
-                        icon = Icons.Default.Bolt,
-                        label = "Nightcore",
-                        selected = isNightcore,
-                        onClick = {
-                            if (isNightcore) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(1.25f, 1.25f)
-                        }
-                    )
-                }
-
-                IconButton(
-                    onClick = onAddToPlaylist,
-                    modifier = Modifier.align(Alignment.CenterStart)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AddCircle,
-                        contentDescription = "Add to Playlist",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Progress Slider & Timestamps. Split into its own composable so the position tick
-            // recomposes only this row rather than the entire sheet (artwork, marquees, chips
-            // and transport buttons all sit in this same function).
-            SeekSection(
-                positionProvider = positionProvider,
-                durationMs = durationMs,
-                onSeekTo = onSeekTo
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Main Playback Controls. The three buttons on each side of the play/pause FAB sit in
-            // their own equal-width cell (Modifier.weight(1f)) rather than relying on
-            // Arrangement.SpaceEvenly to land on a centered result by coincidence of the icons'
-            // own sizes -- six equal-width cells flanking one fixed-size FAB is centered by
-            // construction, regardless of how any individual icon inside a cell is sized.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Shuffle Button -- mirror-flips across its vertical axis and back on every tap,
-                // which for this symmetric two-arrow glyph reads as the arrows crossing over to
-                // the opposite side and returning.
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    val shuffleTint by animateColorAsState(
-                        targetValue = if (isShuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        label = "shuffle_tint"
-                    )
-                    val shuffleFlip = remember { Animatable(0f) }
-                    val scope = rememberCoroutineScope()
-                    BouncyIconButton(onClick = {
-                        scope.launch {
-                            shuffleFlip.animateTo(1f, tween(200))
-                            shuffleFlip.animateTo(0f, tween(200))
-                        }
-                        onToggleShuffle()
-                    }) {
+                    IconButton(onClick = onToggleFavourite) {
                         Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = shuffleTint,
-                            modifier = Modifier.graphicsLayer { scaleX = 1f - 2f * shuffleFlip.value }
-                        )
-                    }
-                }
-
-                // Skip Previous -- bumps a little bigger then settles back, on every tap.
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    val previousBump = remember { Animatable(1f) }
-                    var previousBumpTrigger by remember { mutableStateOf(0) }
-                    val scope = rememberCoroutineScope()
-                    LaunchedEffect(previousBumpTrigger) {
-                        if (previousBumpTrigger > 0) {
-                            previousBump.animateTo(1.25f, tween(120))
-                            previousBump.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                        }
-                    }
-                    BouncyIconButton(onClick = {
-                        previousBumpTrigger++
-                        onSkipPrevious()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.SkipPrevious,
-                            contentDescription = "Previous",
-                            tint = MaterialTheme.colorScheme.onSurface,
+                            imageVector = if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (isFavourite) "Remove from Favourites" else "Add to Favourites",
+                            tint = if (isFavourite) VaporPink else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
-                                .size(36.dp)
-                                .graphicsLayer { scaleX = previousBump.value; scaleY = previousBump.value }
+                                .size(28.dp)
+                                .graphicsLayer {
+                                    scaleX = heartScale.value
+                                    scaleY = heartScale.value
+                                    rotationZ = heartRotation.value
+                                }
                         )
                     }
                 }
 
-                // Rewind 5s
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    SeekArrowButton(
-                        forward = false,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        onClick = { onSeekBy(-5000L) }
-                    )
-                }
+                Spacer(modifier = Modifier.width(12.dp))
 
-                // Play / Pause FAB -- fixed size, no weight, so it always sits exactly between
-                // the two sets of three equal-width cells on either side of it. Bounces on press
-                // like every other transport button, and morphs its own glyph between the two
-                // bars and the triangle rather than crossfading between two separate icons.
-                val fabInteractionSource = remember { MutableInteractionSource() }
-                val isFabPressed by fabInteractionSource.collectIsPressedAsState()
-                val fabScale by animateFloatAsState(
-                    targetValue = if (isFabPressed) 0.88f else 1f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh),
-                    label = "fab_press_scale"
+                PresetIconButton(
+                    icon = Icons.Default.Bolt,
+                    label = "Nightcore",
+                    selected = isNightcore,
+                    onClick = {
+                        if (isNightcore) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(1.25f, 1.25f)
+                    }
                 )
-                FilledIconButton(
-                    onClick = onPlayPause,
-                    interactionSource = fabInteractionSource,
-                    modifier = Modifier
-                        .size(68.dp)
-                        .graphicsLayer {
-                            scaleX = fabScale
-                            scaleY = fabScale
-                        },
-                    shape = CircleShape,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    MorphingPlayPauseIcon(
-                        isPlaying = isPlaying,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(30.dp)
-                    )
-                }
+            }
 
-                // Forward 5s
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    SeekArrowButton(
-                        forward = true,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        onClick = { onSeekBy(5000L) }
-                    )
-                }
+            IconButton(
+                onClick = onAddToPlaylist,
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AddCircle,
+                    contentDescription = "Add to Playlist",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
 
-                // Skip Next -- same bump as Previous.
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    val nextBump = remember { Animatable(1f) }
-                    var nextBumpTrigger by remember { mutableStateOf(0) }
-                    LaunchedEffect(nextBumpTrigger) {
-                        if (nextBumpTrigger > 0) {
-                            nextBump.animateTo(1.25f, tween(120))
-                            nextBump.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                        }
-                    }
-                    BouncyIconButton(onClick = {
-                        nextBumpTrigger++
-                        onSkipNext()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = "Next",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .graphicsLayer { scaleX = nextBump.value; scaleY = nextBump.value }
-                        )
-                    }
-                }
+        Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 20.dp))
 
-                // Repeat Mode -- OFF shows just "1", REPEAT_ONE morphs a ring of arrows in around
-                // it, REPEAT_ALL fades the "1" back out leaving just the ring, and back to OFF
-                // fades the ring back out -- see [RepeatModeIcon].
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    val repeatTint by animateColorAsState(
-                        targetValue = if (repeatMode != Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        label = "repeat_tint"
-                    )
-                    BouncyIconButton(onClick = onToggleRepeat) {
-                        RepeatModeIcon(repeatMode = repeatMode, tint = repeatTint)
+        // Progress Slider & Timestamps. Split into its own composable so the position tick
+        // recomposes only this row rather than the entire sheet (artwork, marquees, chips
+        // and transport buttons all sit in this same function).
+        SeekSection(
+            positionProvider = positionProvider,
+            durationMs = durationMs,
+            onSeekTo = onSeekTo
+        )
+
+        Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 16.dp))
+
+        // Main Playback Controls. The three buttons on each side of the play/pause FAB sit in
+        // their own equal-width cell (Modifier.weight(1f)) rather than relying on
+        // Arrangement.SpaceEvenly to land on a centered result by coincidence of the icons'
+        // own sizes -- six equal-width cells flanking one fixed-size FAB is centered by
+        // construction, regardless of how any individual icon inside a cell is sized.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Shuffle Button -- mirror-flips across its vertical axis and back on every tap,
+            // which for this symmetric two-arrow glyph reads as the arrows crossing over to
+            // the opposite side and returning.
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                val shuffleTint by animateColorAsState(
+                    targetValue = if (isShuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = "shuffle_tint"
+                )
+                val shuffleFlip = remember { Animatable(0f) }
+                val scope = rememberCoroutineScope()
+                BouncyIconButton(onClick = {
+                    scope.launch {
+                        shuffleFlip.animateTo(1f, tween(200))
+                        shuffleFlip.animateTo(0f, tween(200))
                     }
+                    onToggleShuffle()
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = shuffleTint,
+                        modifier = Modifier.graphicsLayer { scaleX = 1f - 2f * shuffleFlip.value }
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            // Skip Previous -- bumps a little bigger then settles back, on every tap.
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                val previousBump = remember { Animatable(1f) }
+                var previousBumpTrigger by remember { mutableStateOf(0) }
+                val scope = rememberCoroutineScope()
+                LaunchedEffect(previousBumpTrigger) {
+                    if (previousBumpTrigger > 0) {
+                        previousBump.animateTo(1.25f, tween(120))
+                        previousBump.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+                    }
+                }
+                BouncyIconButton(onClick = {
+                    previousBumpTrigger++
+                    onSkipPrevious()
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Previous",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .size(if (isLandscape) 30.dp else 36.dp)
+                            .graphicsLayer { scaleX = previousBump.value; scaleY = previousBump.value }
+                    )
+                }
+            }
+
+            // Rewind 5s
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                SeekArrowButton(
+                    forward = false,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = { onSeekBy(-5000L) }
+                )
+            }
+
+            // Play / Pause FAB -- fixed size, no weight, so it always sits exactly between
+            // the two sets of three equal-width cells on either side of it. Bounces on press
+            // like every other transport button, and morphs its own glyph between the two
+            // bars and the triangle rather than crossfading between two separate icons.
+            val fabInteractionSource = remember { MutableInteractionSource() }
+            val isFabPressed by fabInteractionSource.collectIsPressedAsState()
+            val fabScale by animateFloatAsState(
+                targetValue = if (isFabPressed) 0.88f else 1f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh),
+                label = "fab_press_scale"
+            )
+            FilledIconButton(
+                onClick = onPlayPause,
+                interactionSource = fabInteractionSource,
+                modifier = Modifier
+                    .size(if (isLandscape) 56.dp else 68.dp)
+                    .graphicsLayer {
+                        scaleX = fabScale
+                        scaleY = fabScale
+                    },
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                MorphingPlayPauseIcon(
+                    isPlaying = isPlaying,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(if (isLandscape) 26.dp else 30.dp)
+                )
+            }
+
+            // Forward 5s
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                SeekArrowButton(
+                    forward = true,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = { onSeekBy(5000L) }
+                )
+            }
+
+            // Skip Next -- same bump as Previous.
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                val nextBump = remember { Animatable(1f) }
+                var nextBumpTrigger by remember { mutableStateOf(0) }
+                LaunchedEffect(nextBumpTrigger) {
+                    if (nextBumpTrigger > 0) {
+                        nextBump.animateTo(1.25f, tween(120))
+                        nextBump.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+                    }
+                }
+                BouncyIconButton(onClick = {
+                    nextBumpTrigger++
+                    onSkipNext()
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .size(if (isLandscape) 30.dp else 36.dp)
+                            .graphicsLayer { scaleX = nextBump.value; scaleY = nextBump.value }
+                    )
+                }
+            }
+
+            // Repeat Mode -- OFF shows just "1", REPEAT_ONE morphs a ring of arrows in around
+            // it, REPEAT_ALL fades the "1" back out leaving just the ring, and back to OFF
+            // fades the ring back out -- see [RepeatModeIcon].
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                val repeatTint by animateColorAsState(
+                    targetValue = if (repeatMode != Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = "repeat_tint"
+                )
+                BouncyIconButton(onClick = onToggleRepeat) {
+                    RepeatModeIcon(repeatMode = repeatMode, tint = repeatTint)
+                }
+            }
+        }
+    }
+
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        if (isLandscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .padding(horizontal = 24.dp)
+            ) {
+                // Left half: just the artwork, centred in its half of the screen.
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(0.5f)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val artSize = (maxHeight - 48.dp).coerceIn(96.dp, minOf(maxWidth, 250.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        artSection(Modifier.size(artSize))
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(24.dp))
+
+                // Right half: header actions, title and artist, then presets, seek bar and
+                // transport controls.
+                Column(
+                    modifier = Modifier
+                        .weight(0.5f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    headerSection()
+                    titleSection()
+                    Spacer(modifier = Modifier.height(8.dp))
+                    controlsSection()
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .padding(horizontal = 24.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                headerSection()
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                artSection(Modifier.fillMaxWidth(0.85f).aspectRatio(1f))
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                titleSection()
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                controlsSection()
+
+                Spacer(modifier = Modifier.height(10.dp))
+            }
         }
     }
 }
@@ -1380,12 +1415,6 @@ private class VolumeState(private val audioManager: AudioManager) {
     // device with 15 steps and one with 30 both show "50" at the halfway point).
     val volumePercent: Int
         get() = (volume * 100f / maxVolume).roundToInt()
-
-    fun applyVolume(value: Int) {
-        volume = value
-        // flags=0: suppress the system's own volume UI/toast, since this slider replaces it.
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
-    }
 
     fun refreshFromSystem() {
         volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)

@@ -19,6 +19,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -52,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vui.vaporwave.ui.AppDestination
 import com.vui.vaporwave.ui.LibraryTab
+import com.vui.vaporwave.ui.rememberIsLandscape
 import kotlin.math.roundToInt
 
 /**
@@ -73,6 +79,9 @@ fun VaporwaveTopBar(
     pullProgress: Float = 0f
 ) {
     var isMenuExpanded by remember { mutableStateOf(false) }
+    // Landscape trims the bar's padding (no pull spacing -- one-handed pull is disabled there) to
+    // leave room for the list below.
+    val isLandscape = rememberIsLandscape()
 
     // Positive rotationZ in graphicsLayer turns clockwise, so this turns the cog 45 degrees
     // right on open and back left (anticlockwise) on close -- driven directly by isMenuExpanded
@@ -88,7 +97,7 @@ fun VaporwaveTopBar(
     // they were briefly a single shared value so the two matched exactly, but tuning one by
     // itself (shift the title down, then pull the dots in closer) kept fighting the other
     // through that shared term, so they're now two separate, freely adjustable numbers.
-    val titleTopGap = 3.dp + 4.dp * pullProgress
+    val titleTopGap = if (isLandscape) 0.dp else 3.dp + 4.dp * pullProgress
 
     // Gap between the title and the dots row below it.
     val titleToDotsGap = 2.dp + 4.dp * pullProgress
@@ -100,7 +109,9 @@ fun VaporwaveTopBar(
     // separately pinned to Alignment.Top so they're structurally independent of whatever height
     // that Column ends up with. The outer Row's bottom padding is reduced by the same amount so
     // the bar's total height doesn't grow -- the title+dots block just sits lower within it.
-    val titleExtraDownShift = 8.dp
+    val titleExtraDownShift = if (isLandscape) 0.dp else 8.dp
+
+    val iconAlignment = if (isLandscape) Alignment.CenterVertically else Alignment.Top
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -110,11 +121,14 @@ fun VaporwaveTopBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
+                // Landscape puts a punch-hole/notch on the left or right edge, and edge-to-edge
+                // draws under it -- keeps the title (and icons) clear of that side.
+                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
                 .padding(
                     start = 12.dp,
                     end = 2.dp,
                     top = titleTopGap,
-                    bottom = 16.dp + 6.dp * pullProgress - titleExtraDownShift
+                    bottom = if (isLandscape) 0.dp else 16.dp + 6.dp * pullProgress - titleExtraDownShift
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -186,7 +200,7 @@ fun VaporwaveTopBar(
             }
 
             if (destination == AppDestination.LIBRARY) {
-                IconButton(onClick = onSearchClick, modifier = Modifier.align(Alignment.Top)) {
+                IconButton(onClick = onSearchClick, modifier = Modifier.align(iconAlignment)) {
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Search"
@@ -194,7 +208,7 @@ fun VaporwaveTopBar(
                 }
             }
 
-            Box(modifier = Modifier.align(Alignment.Top)) {
+            Box(modifier = Modifier.align(iconAlignment)) {
                 IconButton(
                     onClick = { isMenuExpanded = true }
                 ) {

@@ -42,6 +42,11 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Column
@@ -99,6 +104,7 @@ import com.vui.vaporwave.ui.MetadataEditTarget
 import com.vui.vaporwave.ui.MetadataSaveState
 import com.vui.vaporwave.ui.MusicViewModel
 import com.vui.vaporwave.ui.SpotlightCategory
+import com.vui.vaporwave.ui.rememberIsLandscape
 import com.vui.vaporwave.ui.components.MiniPlayer
 import com.vui.vaporwave.ui.components.NowPlayingSheet
 import com.vui.vaporwave.ui.components.PlaylistPickerDialog
@@ -456,6 +462,14 @@ class MainActivity : ComponentActivity() {
         // made every gesture-opened pull un-closable by scrolling too, not just this toggle's.
         // Only this flag, not the pull amount, decides whether scrolling is allowed to retract it.
         var isOneHandedModeLocked by remember { mutableStateOf(false) }
+        // One-handed reach isn't offered in landscape (width/height are too tight to give up
+        // space to it). The user's toggle is remembered, just not applied while landscape: the
+        // pull is forced closed on entering, and restored to match the toggle on returning.
+        val isLandscape = rememberIsLandscape()
+        val isOneHandedActive = isOneHandedModeLocked && !isLandscape
+        LaunchedEffect(isLandscape) {
+            pullProgressState.floatValue = if (!isLandscape && isOneHandedModeLocked) 1f else 0f
+        }
         val density = LocalDensity.current
         val maxPullPx = with(density) { 96.dp.toPx() }
 
@@ -510,6 +524,18 @@ class MainActivity : ComponentActivity() {
         }
         LaunchedEffect(pendingWriteRequest) {
             pendingWriteRequest?.let { writeRequestLauncher.launch(it) }
+        }
+
+        // Set when Now Playing hands off to a full page (FX Studio, Settings) so that back returns to
+        // Now Playing itself -- and to the page that was underneath it -- instead of going to the
+        // Library's Tracks tab like a normal peer-page back. Cleared as soon as the user ends up
+        // anywhere else, so it can only ever apply to that one hand-off.
+        var returnToNowPlayingFrom by remember { mutableStateOf<AppDestination?>(null) }
+        var destinationBeforeNowPlayingJump by remember { mutableStateOf(AppDestination.LIBRARY) }
+        LaunchedEffect(destination) {
+            if (returnToNowPlayingFrom != null && destination != returnToNowPlayingFrom) {
+                returnToNowPlayingFrom = null
+            }
         }
 
         BackHandler(enabled = isNowPlayingExpanded) {
@@ -583,6 +609,17 @@ class MainActivity : ComponentActivity() {
             viewModel.setCurrentLibraryTab(LibraryTab.TRACKS)
         }
 
+        // Registered after the generic peer-page handler above so it wins while it applies.
+        BackHandler(
+            enabled = returnToNowPlayingFrom != null && destination == returnToNowPlayingFrom &&
+                !isSearchOpen && !isNowPlayingExpanded && libraryDetailStack.isEmpty() &&
+                trackDetailsTarget == null && metadataEditTarget == null
+        ) {
+            returnToNowPlayingFrom = null
+            viewModel.setDestination(destinationBeforeNowPlayingJump)
+            viewModel.setNowPlayingExpanded(true)
+        }
+
         // Lets the sheet be dragged down from anywhere in its body, not just the header, while
         // still leaving its content scrollable: the drag only starts moving the sheet once the
         // content itself has nothing left to consume (i.e. it's scrolled to the top).
@@ -635,7 +672,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 // Read here, not in MainAppContent's body -- see the comment on pullProgressState.
-                val pullProgress = pullProgressState.floatValue
+                val pullProgress = if (isLandscape) 0f else pullProgressState.floatValue
                 val pullDp = with(density) { (pullProgress * maxPullPx).toDp() }
                 // A real (layout-affecting) spacer above the bar rather than a draw-time offset,
                 // painted the same color as the bar itself -- so growing it as the pull
@@ -773,7 +810,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                 reachabilityPullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
-                                isReachabilityLocked = isOneHandedModeLocked,
+                                isReachabilityLocked = isOneHandedActive,
                                 scrollToTracksSignal = tracksJumpSignal,
                                 tracksListState = tracksListState
                             )
@@ -785,7 +822,8 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
-                                isLocked = isOneHandedModeLocked,
+                                isLocked = isOneHandedActive,
+                                isEnabled = !isLandscape,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 FilesScreen(
@@ -800,7 +838,8 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
-                                isLocked = isOneHandedModeLocked,
+                                isLocked = isOneHandedActive,
+                                isEnabled = !isLandscape,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 EffectsScreen(
@@ -818,7 +857,8 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
-                                isLocked = isOneHandedModeLocked,
+                                isLocked = isOneHandedActive,
+                                isEnabled = !isLandscape,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 SettingsScreen(
@@ -1023,7 +1063,10 @@ class MainActivity : ComponentActivity() {
                                     onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     bottomContentPadding = miniPlayerHeight,
-                                    modifier = Modifier.statusBarsPadding()
+                                    // Landscape punch-hole/notch sits on a side edge -- keep the page clear of it.
+                                    modifier = Modifier
+                                        .statusBarsPadding()
+                                        .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
                                 )
                             } else {
                                 val payload = when (detail) {
@@ -1120,7 +1163,10 @@ class MainActivity : ComponentActivity() {
                                     favouriteTracks = payload.favouriteTracks,
                                     showTrackDuration = payload.showTrackDuration,
                                     bottomContentPadding = miniPlayerHeight,
-                                    modifier = Modifier.statusBarsPadding()
+                                    // Landscape punch-hole/notch sits on a side edge -- keep the page clear of it.
+                                    modifier = Modifier
+                                        .statusBarsPadding()
+                                        .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
                                 )
                             }
                         }
@@ -1145,6 +1191,7 @@ class MainActivity : ComponentActivity() {
                                 onDragStopped = { velocity -> settleSheet(velocity) },
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
+                                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
                                     .onSizeChanged { size ->
                                         miniPlayerHeight = with(miniPlayerDensity) { size.height.toDp() }
                                     }
@@ -1302,6 +1349,8 @@ class MainActivity : ComponentActivity() {
                 onToggleShuffle = { viewModel.toggleShuffle() },
                 onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) },
                 onOpenEffects = {
+                    destinationBeforeNowPlayingJump = destination
+                    returnToNowPlayingFrom = AppDestination.EFFECTS
                     viewModel.setNowPlayingExpanded(false)
                     viewModel.closeSearch()
                     viewModel.setDestination(AppDestination.EFFECTS)
@@ -1319,6 +1368,8 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onOpenSettings = {
+                    destinationBeforeNowPlayingJump = destination
+                    returnToNowPlayingFrom = AppDestination.SETTINGS
                     viewModel.setNowPlayingExpanded(false)
                     viewModel.setDestination(AppDestination.SETTINGS)
                 },

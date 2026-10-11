@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.vui.vaporwave.model.ThemeMode
+import com.vui.vaporwave.ui.rememberIsLandscape
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,8 +73,10 @@ fun SettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
+            // Padding goes *inside* the scroll: outside it, the 16dp margin clipped scrolled
+            // content short of the top and bottom edges, leaving a visible opaque strip there.
             .verticalScroll(rememberScrollState())
+            .padding(16.dp)
     ) {
         // Appearance & Personalization Card
         Card(
@@ -80,23 +84,26 @@ fun SettingsScreen(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            val isLandscape = rememberIsLandscape()
+            val appearanceLeft: @Composable ColumnScope.() -> Unit = {
+                // Landscape gives this side half the card to itself, so its text and the theme
+                // picker are larger to fill it.
                 Text(
                     text = "Appearance and Personalization",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = if (isLandscape) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isLandscape) 28.dp else 16.dp))
 
                 // Theme mode: System Default / Light / Dark
                 Text(
                     text = "Theme",
-                    style = MaterialTheme.typography.labelLarge,
+                    style = if (isLandscape) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(if (isLandscape) 12.dp else 8.dp))
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     val options = listOf(
                         ThemeMode.SYSTEM to "System",
@@ -107,17 +114,18 @@ fun SettingsScreen(
                         SegmentedButton(
                             selected = themeMode == mode,
                             onClick = { onSetThemeMode(mode) },
-                            shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size)
+                            shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                            modifier = if (isLandscape) Modifier.height(48.dp) else Modifier
                         ) {
-                            Text(label)
+                            Text(
+                                text = label,
+                                style = if (isLandscape) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelLarge
+                            )
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(modifier = Modifier.height(16.dp))
-
+            }
+            val appearanceRight: @Composable ColumnScope.() -> Unit = {
                 // Neon Theme
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -262,6 +270,25 @@ fun SettingsScreen(
                         checked = skipSplashScreen,
                         onCheckedChange = onToggleSkipSplashScreen
                     )
+                }
+            }
+
+            if (isLandscape) {
+                // Landscape: title + theme picker on the left, the toggles on the right.
+                Row(modifier = Modifier.padding(16.dp)) {
+                    Column(modifier = Modifier.weight(0.5f), content = appearanceLeft)
+                    Spacer(modifier = Modifier.width(24.dp))
+                    Column(modifier = Modifier.weight(0.5f), content = appearanceRight)
+                }
+            } else {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    appearanceLeft()
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    appearanceRight()
                 }
             }
         }

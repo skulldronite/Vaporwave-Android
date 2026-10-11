@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.PaddingValues
@@ -33,6 +34,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -109,6 +113,7 @@ import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.ui.LibraryTab
 import com.vui.vaporwave.ui.SpotlightCategory
 import com.vui.vaporwave.ui.components.ReachabilityPullBox
+import com.vui.vaporwave.ui.rememberIsLandscape
 import com.vui.vaporwave.ui.components.TrackItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -118,6 +123,22 @@ import kotlin.math.roundToInt
 import java.util.Locale
 
 private val ALPHABET_SCROLLBAR_WIDTH = 28.dp
+private val ALPHABET_LANDSCAPE_EDGE_GAP = 12.dp
+
+// How much a list reserves at its end for the alphabet strip -- landscape's strip sits in from
+// the edge.
+@Composable
+private fun alphabetScrollbarReserve(): Dp =
+    if (rememberIsLandscape()) ALPHABET_SCROLLBAR_WIDTH + ALPHABET_LANDSCAPE_EDGE_GAP else ALPHABET_SCROLLBAR_WIDTH
+
+// Portrait leaves generous room under the last row; landscape can't spare that much of its short
+// viewport (Scaffold already keeps the list clear of the mini player).
+@Composable
+private fun rememberListBottomPadding(): Dp = if (rememberIsLandscape()) 16.dp else 120.dp
+
+// Minimum slot height per letter on the alphabet strip -- in landscape the strip is shorter than
+// 26 of these, so only a spread of its letters is drawn instead of squishing them together.
+private val ALPHABET_MIN_LETTER_SLOT = 14.dp
 private val PRECISE_SCROLLBAR_WIDTH = 20.dp
 // Extra breathing room from the screen edge so the precise scrollbar's touch area doesn't
 // overlap the system's edge-swipe-back gesture zone on devices with fullscreen gesture nav.
@@ -176,6 +197,7 @@ fun LibraryScreen(
     // disposed and recomposed (e.g. navigating to FX Studio and back).
     tracksListState: LazyListState = rememberLazyListState()
 ) {
+    val isLandscape = rememberIsLandscape()
     val tabs = remember { LibraryTab.entries.toList() }
     val pagerState = rememberPagerState(initialPage = tabs.indexOf(currentTab)) { tabs.size }
 
@@ -237,6 +259,7 @@ fun LibraryScreen(
                 onPullProgressChanged = onPullProgressChanged,
                 isPagerScrollInProgress = { pagerState.isScrollInProgress },
                 isLocked = isReachabilityLocked,
+                isEnabled = !isLandscape,
                 modifier = Modifier.fillMaxSize()
             ) {
             when (tabs[page]) {
@@ -387,9 +410,9 @@ private fun TracksList(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    bottom = 120.dp,
+                    bottom = rememberListBottomPadding(),
                     top = 4.dp,
-                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+                    end = if (canScroll) alphabetScrollbarReserve() else 8.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -864,7 +887,7 @@ private fun SimpleTrackList(
             state = listState,
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                bottom = 120.dp,
+                bottom = rememberListBottomPadding(),
                 top = 4.dp,
                 end = 8.dp
             ),
@@ -962,9 +985,95 @@ fun DetailTrackList(
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
     }
     val context = LocalContext.current
+    val isLandscape = rememberIsLandscape()
+    // Album detail only (groupByDisc is its marker): landscape splits into artwork + name on the
+    // left and the tracks on the right. Playlist/spotlight detail keep their single-column layout.
+    val useLandscapeSplit = isLandscape && heroArtwork != null && groupByDisc && tracks.isNotEmpty()
+
+    // Computed here (a plain composable scope), not inside a LazyColumn's content lambda -- that's
+    // a LazyListScope builder, not itself @Composable, so it can only host remember{} indirectly
+    // via the item {} / items {} blocks it registers, not directly in its own body.
+    val discGroups = remember(sortedTracks, groupByDisc) {
+        if (groupByDisc) sortedTracks.groupBy { it.discNumber }.toSortedMap() else null
+    }
+    // A plain single-disc album showing a lone "Disk 0" header above its only track list
+    // would just read as broken, so it's only shown once there's actually more than one
+    // disc to distinguish.
+    val showDiscHeaders = (discGroups?.size ?: 0) > 1
+
+    // The track rows themselves, shared by the portrait list (under its collapsing header item)
+    // and the landscape split's right-hand list.
+    val trackRows: LazyListScope.(highlightedTrackId: Long?) -> Unit = { highlightedTrackId ->
+            if (discGroups != null) {
+                // Grouping (not sorting) by disc -- within each disc's own sub-list, the
+                // relative order from the already-sorted sortedTracks is preserved, so the
+                // active Shortest/Longest sort still applies per disc rather than
+                // interleaving tracks from different discs by duration.
+                discGroups.forEach { (discNumber, discTracks) ->
+                    if (showDiscHeaders) {
+                        item(key = "disc_$discNumber") {
+                            Text(
+                                text = "Disk $discNumber",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)
+                            )
+                        }
+                    }
+                    items(items = discTracks, key = { it.id }) { track ->
+                        DiscTrackRow(
+                            track = track,
+                            isPlayingThisTrack = currentTrack?.id == track.id,
+                            onClick = { onTrackClick(track) },
+                            onAddToPlaylist = { onAddToPlaylist(track) },
+                            onShare = { shareTrack(context, track) },
+                            onTrackDetails = { onOpenTrackDetails(track) },
+                            leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
+            } else {
+                items(items = sortedTracks, key = { it.id }) { track ->
+                    val isPlayingThis = currentTrack?.id == track.id
+                    TrackItem(
+                        track = track,
+                        isPlayingThisTrack = isPlayingThis,
+                        onClick = { onTrackClick(track) },
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        showArtwork = showTrackArtwork,
+                        // Only meaningful once the list is actually ordered by it -- shown
+                        // under Name sort too it'd read as index-like clutter unrelated to
+                        // the alphabetical order on screen.
+                        trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null,
+                        isHighlighted = track.id == highlightedTrackId,
+                        showDuration = showTrackDuration,
+                        onAddToPlaylist = { onAddToPlaylist(track) },
+                        onShare = { shareTrack(context, track) },
+                        onTrackDetails = { onOpenTrackDetails(track) }
+                    )
+                }
+            }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
-        if ((heroArtwork != null || favouriteTracks != null) && tracks.isNotEmpty()) {
+        if (useLandscapeSplit && heroArtwork != null) {
+            AlbumLandscapeSplit(
+                title = title,
+                subtitle = subtitle,
+                heroArtwork = heroArtwork,
+                onBack = onBack,
+                onEditMetadata = onEditMetadata,
+                showToolbar = showToolbar,
+                sortOption = sortOption,
+                onSortOptionSelected = { sortOption = it },
+                availableSortOptions = availableSortOptions,
+                onShuffleClick = { onShufflePlay(sortedTracks) },
+                bottomContentPadding = bottomContentPadding,
+                trackRows = { trackRows(null) }
+            )
+        } else if ((heroArtwork != null || favouriteTracks != null) && tracks.isNotEmpty()) {
             // The header (hero art + toolbar) is a real item -- index 0 -- in the LazyColumn
             // below, not a separate overlay with its own hand-tracked scroll position. Every
             // earlier version of this (a NestedScrollConnection summing drag deltas, reading
@@ -1016,18 +1125,6 @@ fun DetailTrackList(
                 onAlphabetJump
             }
 
-            // Computed here (a plain composable scope), not inside the LazyColumn's content
-            // lambda below -- that's a LazyListScope builder, not itself @Composable, so it can
-            // only host remember{} indirectly via the item {} / items {} blocks it registers, not
-            // directly in its own body.
-            val discGroups = remember(sortedTracks, groupByDisc) {
-                if (groupByDisc) sortedTracks.groupBy { it.discNumber }.toSortedMap() else null
-            }
-            // A plain single-disc album showing a lone "Disk 0" header above its only track list
-            // would just read as broken, so it's only shown once there's actually more than one
-            // disc to distinguish.
-            val showDiscHeaders = (discGroups?.size ?: 0) > 1
-
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 LazyColumn(
                     state = listState,
@@ -1045,7 +1142,7 @@ fun DetailTrackList(
                         bottom = 16.dp,
                         top = 4.dp,
                         end = when {
-                            showAlphabetScrollbar -> ALPHABET_SCROLLBAR_WIDTH
+                            showAlphabetScrollbar -> alphabetScrollbarReserve()
                             showPreciseScrollbar -> PRECISE_SCROLLBAR_WIDTH + PRECISE_SCROLLBAR_EDGE_INSET
                             else -> 0.dp
                         }
@@ -1156,57 +1253,7 @@ fun DetailTrackList(
                         }
                     }
 
-                    if (discGroups != null) {
-                        // Grouping (not sorting) by disc -- within each disc's own sub-list, the
-                        // relative order from the already-sorted sortedTracks is preserved, so the
-                        // active Shortest/Longest sort still applies per disc rather than
-                        // interleaving tracks from different discs by duration.
-                        discGroups.forEach { (discNumber, discTracks) ->
-                            if (showDiscHeaders) {
-                                item(key = "disc_$discNumber") {
-                                    Text(
-                                        text = "Disk $discNumber",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)
-                                    )
-                                }
-                            }
-                            items(items = discTracks, key = { it.id }) { track ->
-                                DiscTrackRow(
-                                    track = track,
-                                    isPlayingThisTrack = currentTrack?.id == track.id,
-                                    onClick = { onTrackClick(track) },
-                                    onAddToPlaylist = { onAddToPlaylist(track) },
-                                    onShare = { shareTrack(context, track) },
-                                    onTrackDetails = { onOpenTrackDetails(track) },
-                                    leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                            }
-                        }
-                    } else {
-                        items(items = sortedTracks, key = { it.id }) { track ->
-                            val isPlayingThis = currentTrack?.id == track.id
-                            TrackItem(
-                                track = track,
-                                isPlayingThisTrack = isPlayingThis,
-                                onClick = { onTrackClick(track) },
-                                modifier = Modifier.padding(horizontal = 8.dp),
-                                showArtwork = showTrackArtwork,
-                                // Only meaningful once the list is actually ordered by it -- shown
-                                // under Name sort too it'd read as index-like clutter unrelated to
-                                // the alphabetical order on screen.
-                                trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null,
-                                isHighlighted = track.id == highlightedTrackId,
-                                showDuration = showTrackDuration,
-                                onAddToPlaylist = { onAddToPlaylist(track) },
-                                onShare = { shareTrack(context, track) },
-                                onTrackDetails = { onOpenTrackDetails(track) }
-                            )
-                        }
-                    }
+                    trackRows(highlightedTrackId)
                 }
 
                 IconButton(
@@ -1436,6 +1483,130 @@ fun DetailTrackList(
 }
 
 /**
+ * Landscape album detail: artwork, album name and song count on the left, the sort/shuffle bar over
+ * the track list on the right -- the same half-and-half split the other landscape screens use.
+ */
+@Composable
+private fun AlbumLandscapeSplit(
+    title: String,
+    subtitle: String,
+    heroArtwork: HeroArtwork,
+    onBack: () -> Unit,
+    onEditMetadata: (() -> Unit)?,
+    showToolbar: Boolean,
+    sortOption: LibrarySortOption,
+    onSortOptionSelected: (LibrarySortOption) -> Unit,
+    availableSortOptions: List<LibrarySortOption>,
+    onShuffleClick: () -> Unit,
+    bottomContentPadding: Dp,
+    trackRows: LazyListScope.() -> Unit
+) {
+    // Both halves stop above the mini player the overlay draws as a sibling (see MainActivity).
+    Row(modifier = Modifier.fillMaxSize().padding(bottom = bottomContentPadding)) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .weight(0.42f)
+                .fillMaxHeight()
+        ) {
+            // What's left of the half's height once the back row, the gaps and two text lines
+            // are accounted for, so the artwork is as large as fits without scrolling.
+            val artSize = (maxHeight - 148.dp).coerceIn(96.dp, minOf(maxWidth - 24.dp, 220.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, end = 4.dp, top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    if (onEditMetadata != null) {
+                        IconButton(onClick = onEditMetadata) {
+                            Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit album details")
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(artSize)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = heroArtwork.placeholderIcon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    if (heroArtwork.uri != null) {
+                        val context = LocalContext.current
+                        AsyncImage(
+                            model = remember(heroArtwork.uri) {
+                                ImageRequest.Builder(context)
+                                    .data(heroArtwork.uri)
+                                    .size(Size(360, 360))
+                                    .build()
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(0.58f)
+                .fillMaxHeight()
+        ) {
+            if (showToolbar) {
+                LibraryToolbar(
+                    sortOption = sortOption,
+                    onSortOptionSelected = onSortOptionSelected,
+                    onShuffleClick = onShuffleClick,
+                    availableSortOptions = availableSortOptions,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp, end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                content = trackRows
+            )
+        }
+    }
+}
+
+/**
  * Most Played's top 2, as a "Your favourites" pair: two equal-sized framed artwork squares side
  * by side, with no rank distinction between them -- just the header's two most played tracks.
  */
@@ -1569,10 +1740,10 @@ private fun AlbumsList(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                bottom = 120.dp,
+                bottom = rememberListBottomPadding(),
                 top = 8.dp,
                 start = 8.dp,
-                end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+                end = if (canScroll) alphabetScrollbarReserve() else 8.dp
             ),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -1698,10 +1869,10 @@ private fun ArtistsList(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                bottom = 120.dp,
+                bottom = rememberListBottomPadding(),
                 top = 4.dp,
                 start = 8.dp,
-                end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+                end = if (canScroll) alphabetScrollbarReserve() else 8.dp
             ),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -1816,10 +1987,21 @@ private fun PlaylistsList(
     }
 
     val listState = rememberLazyListState()
+    val isLandscape = rememberIsLandscape()
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    // Landscape: the largest square that still leaves room for the row's own padding and the two
+    // label lines under it, capped by a third of the width so the three always fit side by side.
+    val landscapeTileSize = if (isLandscape) {
+        val fitsHeight = maxHeight - 8.dp - 24.dp - 44.dp
+        val fitsWidth = (maxWidth - 16.dp - 8.dp) / 3 - 12.dp
+        minOf(fitsHeight, fitsWidth).coerceAtLeast(72.dp)
+    } else {
+        null
+    }
     LazyColumn(
         state = listState,
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp, start = 8.dp, end = 8.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = rememberListBottomPadding(), top = 8.dp, start = 8.dp, end = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         item {
@@ -1830,7 +2012,8 @@ private fun PlaylistsList(
                 onCategoryClick = onCategoryClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 12.dp)
+                    .padding(horizontal = 4.dp, vertical = 12.dp),
+                tileSize = landscapeTileSize
             )
         }
 
@@ -1916,6 +2099,7 @@ private fun PlaylistsList(
             }
         }
     }
+    }
 
 /** e.g. 3661000ms -> "1:01:01"; under an hour -> "12:34". */
 private fun formatTotalDuration(totalMs: Long): String {
@@ -1941,29 +2125,34 @@ private fun SpotlightRow(
     mostPlayedTrack: AudioTrack?,
     recentlyPlayedTrack: AudioTrack?,
     onCategoryClick: (SpotlightCategory) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    tileSize: Dp? = null
 ) {
+    // Portrait: three equal-width squares filling the row. Landscape ([tileSize] set): equal
+    // thirds of the very wide screen would be too tall to fit, so the caller passes the largest
+    // square that still fits on screen with its labels, spread evenly across the row.
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = if (tileSize != null) Arrangement.SpaceEvenly else Arrangement.spacedBy(10.dp)
     ) {
+        val tileModifier = if (tileSize != null) Modifier.width(tileSize) else Modifier.weight(1f)
         SpotlightTile(
             label = SpotlightCategory.RECENTLY_ADDED.label,
             track = recentlyAddedTrack,
             onClick = { onCategoryClick(SpotlightCategory.RECENTLY_ADDED) },
-            modifier = Modifier.weight(1f)
+            modifier = tileModifier
         )
         SpotlightTile(
             label = SpotlightCategory.MOST_PLAYED.label,
             track = mostPlayedTrack,
             onClick = { onCategoryClick(SpotlightCategory.MOST_PLAYED) },
-            modifier = Modifier.weight(1f)
+            modifier = tileModifier
         )
         SpotlightTile(
             label = SpotlightCategory.RECENTLY_PLAYED.label,
             track = recentlyPlayedTrack,
             onClick = { onCategoryClick(SpotlightCategory.RECENTLY_PLAYED) },
-            modifier = Modifier.weight(1f)
+            modifier = tileModifier
         )
     }
 }
@@ -2084,7 +2273,30 @@ private fun AlphabetScrollbar(
     // and scale-up kept jumping to whatever real letter was closest rather than tracking smoothly
     // under the finger. Sizing the strip to only the letters that actually have a match means
     // every slot is real, so every position on the strip lands on one.
-    val letters = remember(letterIndex) { letterIndex.keys.sorted() }
+    val allLetters = remember(letterIndex) { letterIndex.keys.sorted() }
+    // When the strip is too short to give every letter its minimum slot (landscape), only a few
+    // are drawn -- always the first and last, and evenly spaced ones between -- with a dot in each
+    // gap standing for the letters that aren't drawn, so nothing is squished. Touch still resolves
+    // against *every* letter by position, so dragging through a gap lands on (and shows a bubble
+    // for) the letters that aren't drawn. Until the strip's height is measured, everything is drawn.
+    val isLandscape = rememberIsLandscape()
+    val letters = allLetters
+    val minSlotPx = with(LocalDensity.current) { ALPHABET_MIN_LETTER_SLOT.toPx() }
+    val fit = if (trackHeightPx > 0f) (trackHeightPx / minSlotPx).toInt().coerceAtLeast(2) else letters.size
+    val isThinned = letters.size > fit
+    // Indices into `letters` that get drawn. Letters and the dots between them each need a slot, so
+    // only about half as many letters as slots fit.
+    val shownIndices = remember(letters, fit) {
+        if (letters.size <= fit) {
+            letters.indices.toList()
+        } else {
+            val shownCount = ((fit + 1) / 2).coerceAtLeast(2)
+            (0 until shownCount).map { (it * (letters.size - 1).toFloat() / (shownCount - 1)).roundToInt() }.distinct()
+        }
+    }
+    // Landscape pulls the strip in from the screen edge so a back swipe from that edge isn't
+    // swallowed by the strip (and the strip stays out of the system gesture zone).
+    val edgeGap = if (isLandscape) ALPHABET_LANDSCAPE_EDGE_GAP else 0.dp
 
     var activeLetter by remember { mutableStateOf<String?>(null) }
 
@@ -2109,7 +2321,7 @@ private fun AlphabetScrollbar(
                 shadowElevation = 5.dp,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(end = 36.dp)
+                    .padding(end = edgeGap + ALPHABET_SCROLLBAR_WIDTH + 8.dp)
                     .offset { IntOffset(0, (centerY - bubbleSizePx / 2f).roundToInt()) }
                     .size(52.dp)
             ) {
@@ -2124,12 +2336,43 @@ private fun AlphabetScrollbar(
             }
         }
 
-        Column(
+        @Composable
+        fun LetterText(letter: String, modifier: Modifier = Modifier) {
+            val isActive = letter == activeLetter
+            // Read via graphicsLayer's draw-phase lambda rather than `by` in the composable
+            // body, so animating the active letter's scale doesn't recompose all 26 Texts
+            // on every animation frame -- only the draw phase re-runs.
+            val scale = animateFloatAsState(targetValue = if (isActive) 2.4f else 1f, label = "letterScale")
+            Text(
+                text = letter,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                lineHeight = 10.sp,
+                textAlign = TextAlign.Center,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                color = if (isActive) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outline
+                },
+                modifier = modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = scale.value
+                        scaleY = scale.value
+                    }
+            )
+        }
+
+        Box(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
+                .padding(end = edgeGap)
                 .fillMaxHeight()
                 .width(ALPHABET_SCROLLBAR_WIDTH)
-                .systemGestureExclusion()
+                // Portrait only: the strip sits against the edge there and keeps its drag from
+                // being read as the back gesture. In landscape it's inset instead (see edgeGap).
+                .then(if (isLandscape) Modifier else Modifier.systemGestureExclusion())
                 .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
                 .pointerInput(letters, letterIndex) {
                     awaitEachGesture {
@@ -2150,34 +2393,34 @@ private fun AlphabetScrollbar(
                         }
                         activeLetter = null
                     }
-                },
-            verticalArrangement = Arrangement.SpaceEvenly
+                }
         ) {
-            letters.forEach { letter ->
-                val isActive = letter == activeLetter
-                // Read via graphicsLayer's draw-phase lambda rather than `by` in the composable
-                // body, so animating the active letter's scale doesn't recompose all 26 Texts
-                // on every animation frame -- only the draw phase re-runs.
-                val scale = animateFloatAsState(targetValue = if (isActive) 2.4f else 1f, label = "letterScale")
-                Text(
-                    text = letter,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 10.sp,
-                    lineHeight = 10.sp,
-                    textAlign = TextAlign.Center,
-                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isActive) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            scaleX = scale.value
-                            scaleY = scale.value
+            if (!isThinned) {
+                Column(
+                    modifier = Modifier.fillMaxHeight(),
+                    verticalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    letters.forEach { letter -> LetterText(letter) }
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxHeight(),
+                    verticalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    shownIndices.forEachIndexed { position, index ->
+                        LetterText(letters[index])
+                        if (position < shownIndices.lastIndex) {
+                            Text(
+                                text = "\u2022",
+                                fontSize = 6.sp,
+                                lineHeight = 6.sp,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
-                )
+                    }
+                }
             }
         }
     }
@@ -2228,7 +2471,9 @@ private fun PreciseScrollbar(
     Box(
         modifier = modifier
             .width(PRECISE_SCROLLBAR_WIDTH)
-            .systemGestureExclusion()
+            // Landscape: it already sits PRECISE_SCROLLBAR_EDGE_INSET in from the edge, so leave the
+            // edge itself to the system back gesture.
+            .then(if (rememberIsLandscape()) Modifier else Modifier.systemGestureExclusion())
             .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
             .pointerInput(itemCount, maxFirstIndex) {
                 awaitEachGesture {

@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.dp
  * locked-open pull behaves like a deliberate mode switch (only the same toggle closes it) instead
  * of the usual "scroll away and it retracts" gesture behaviour. Read-only here: this composable
  * never sets it itself, only the toggle in MainActivity does.
+ *
+ * [isEnabled] switches the whole gesture off (landscape, where one-handed reach doesn't apply):
+ * scrolling then passes straight through and the pull amount is never touched.
  */
 @Composable
 fun ReachabilityPullBox(
@@ -45,6 +48,7 @@ fun ReachabilityPullBox(
     modifier: Modifier = Modifier,
     isPagerScrollInProgress: () -> Boolean = { false },
     isLocked: Boolean = false,
+    isEnabled: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
     val reachabilityMaxPullPx = with(LocalDensity.current) { 96.dp.toPx() }
@@ -55,6 +59,7 @@ fun ReachabilityPullBox(
     val currentOnPullProgressChanged by rememberUpdatedState(onPullProgressChanged)
     val currentIsPagerScrollInProgress by rememberUpdatedState(isPagerScrollInProgress)
     val currentIsLocked by rememberUpdatedState(isLocked)
+    val currentIsEnabled by rememberUpdatedState(isEnabled)
 
     // Snap open once pulled past 30% of the max, otherwise spring back.
     suspend fun settleReachabilityPull() {
@@ -78,7 +83,7 @@ fun ReachabilityPullBox(
             // it's locked (opened via the Now Playing toggle), in which case only that same
             // toggle can close it.
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                if (source != NestedScrollSource.UserInput || !currentIsEnabled) return Offset.Zero
                 // Never touch the pull while a horizontal page swipe is in progress -- doing so
                 // was fighting the pager's own gesture handling and breaking its transitions.
                 if (currentIsPagerScrollInProgress()) return Offset.Zero
@@ -94,7 +99,7 @@ fun ReachabilityPullBox(
             // Once the content can't consume any more downward drag (already at the top), extend
             // the pull instead of letting it bounce.
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                if (source != NestedScrollSource.UserInput || !currentIsEnabled) return Offset.Zero
                 if (currentIsPagerScrollInProgress()) return Offset.Zero
                 if (available.y <= 0f) return Offset.Zero
                 val current = currentPullPx
@@ -112,7 +117,7 @@ fun ReachabilityPullBox(
                 // Skip while the pager is still settling its own horizontal swipe -- this was
                 // also firing on that fling, causing a visible hitch right as the new page
                 // finished sliding in.
-                if (!currentIsPagerScrollInProgress()) {
+                if (currentIsEnabled && !currentIsPagerScrollInProgress()) {
                     settleReachabilityPull()
                 }
                 return Velocity.Zero

@@ -17,6 +17,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import com.vui.vaporwave.ui.rememberIsLandscape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
@@ -225,6 +229,84 @@ fun ArtistDetailScreen(
     var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
     val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
 
+    val isLandscape = rememberIsLandscape()
+
+    // The Tracks/Albums content, shared by the portrait list (as one lazy item) and the landscape
+    // split's right-hand list.
+    val modeContent: @Composable () -> Unit = {
+        AnimatedContent(
+            targetState = viewMode,
+            // `using null`, same reasoning as the library-detail stack transition in
+            // MainActivity: Tracks and Albums content are rarely the same height, and
+            // AnimatedContent's default SizeTransform would clip/zoom across that
+            // difference instead of just letting the crossfade play out in place.
+            transitionSpec = {
+                if (!viewModeChangedByUser) {
+                    // Skips animating a restored value -- e.g. leaving an album that
+                    // was opened from the Albums tab recomposes this screen fresh, and
+                    // without this guard it visibly played the Tracks-to-Albums wipe
+                    // below as if the user had just switched tabs, instead of it
+                    // simply already having been on Albums.
+                    fadeIn(snap()) togetherWith fadeOut(snap())
+                } else {
+                    // A directional wipe rather than a plain crossfade -- new content
+                    // slides in from the side matching whichever tab it's coming from,
+                    // old content slides out the opposite way, matching the swipe
+                    // gesture's own left/right sense.
+                    val direction = if (targetState == ArtistViewMode.ALBUMS) 1 else -1
+                    (slideInHorizontally(initialOffsetX = { width -> direction * width }) + fadeIn()) togetherWith
+                        (slideOutHorizontally(targetOffsetX = { width -> -direction * width }) + fadeOut()) using null
+                }
+            },
+            label = "artistViewMode",
+            modifier = Modifier.fillMaxWidth()
+        ) { mode ->
+            Column(modifier = Modifier.fillMaxWidth()) {
+                when (mode) {
+                    ArtistViewMode.TRACKS -> {
+                        tracksModeGroups.forEachIndexed { index, group ->
+                            if (index > 0) {
+                                Spacer(modifier = Modifier.height(20.dp))
+                            }
+                            AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
+                            group.tracks.forEach { track ->
+                                DiscTrackRow(
+                                    track = track,
+                                    isPlayingThisTrack = currentTrack?.id == track.id,
+                                    onClick = { onTrackClick(track) },
+                                    onAddToPlaylist = { onAddToPlaylist(track) },
+                                    onShare = { shareTrack(context, track) },
+                                    onTrackDetails = { onOpenTrackDetails(track) },
+                                    leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                )
+                            }
+                        }
+                    }
+                    ArtistViewMode.ALBUMS -> {
+                        albumsModeGroups.chunked(3).forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                row.forEach { group ->
+                                    AlbumSquare(
+                                        group = group,
+                                        onClick = { onOpenAlbum(group.name) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                repeat(3 - row.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -255,77 +337,86 @@ fun ArtistDetailScreen(
                     }
                 }
         ) {
-            LazyColumn(
-                state = listState,
-                // A real (layout-shrinking) padding, not just contentPadding -- contentPadding
-                // only adds blank scroll space before the first/after the last item, it doesn't
-                // shrink this LazyColumn's own clip bounds. Since the mini player floats as a
-                // rounded pill with transparent margins around it (see MiniPlayer.kt), rows laid
-                // out at the very bottom of a fillMaxSize list showed through those margins at
-                // any scroll position, not just once scrolled to the true end -- shrinking the
-                // list's own box means rows can never be placed there at all.
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = bottomContentPadding),
-                contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                item {
+            if (isLandscape) {
+                // Landscape: artwork, artist name and song count on the left; the Tracks/Albums bar
+                // over the list on the right. Swiping anywhere still switches tabs (see above).
+                Row(modifier = Modifier.fillMaxSize().padding(bottom = bottomContentPadding)) {
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(0.42f)
+                            .fillMaxHeight()
+                    ) {
+                        val artSize = (maxHeight - 148.dp).coerceIn(96.dp, minOf(maxWidth - 24.dp, 220.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 4.dp, top = 4.dp),
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                IconButton(onClick = onBack) {
+                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(artSize)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Album,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(56.dp)
+                                )
+                                if (heroArtworkUri != null) {
+                                    AsyncImage(
+                                        model = remember(heroArtworkUri) {
+                                            ImageRequest.Builder(context)
+                                                .data(heroArtworkUri)
+                                                .size(Size(360, 360))
+                                                .build()
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            )
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            )
+                        }
+                    }
+
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .onSizeChanged { headerHeightPx = it.height }
-                            .graphicsLayer { alpha = 1f - heroCollapseFraction },
-                        horizontalAlignment = Alignment.CenterHorizontally
+                            .weight(0.58f)
+                            .fillMaxHeight()
                     ) {
-                        Spacer(modifier = Modifier.height(52.dp))
-                        Box(
-                            modifier = Modifier
-                                .size(180.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Album,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.outline,
-                                modifier = Modifier.size(56.dp)
-                            )
-                            if (heroArtworkUri != null) {
-                                AsyncImage(
-                                    model = remember(heroArtworkUri) {
-                                        ImageRequest.Builder(context)
-                                            .data(heroArtworkUri)
-                                            .size(Size(360, 360))
-                                            .build()
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 32.dp)
-                        )
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 32.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
                         ArtistModeToolbar(
                             viewMode = viewMode,
                             onViewModeChange = { setViewMode(it) },
@@ -335,97 +426,117 @@ fun ArtistDetailScreen(
                             animatePill = viewModeChangedByUser,
                             modifier = Modifier.fillMaxWidth()
                         )
-                    }
-                }
-
-                // A single lazy item rather than the individual items/groups this used to be laid
-                // out as: AnimatedContent needs one bounded region it owns to crossfade between,
-                // it can't animate a transition across a variable range of a LazyColumn's own
-                // items. The tradeoff is that everything below the header is now composed eagerly
-                // instead of only the rows currently on screen -- acceptable for a per-artist
-                // track/album count, but this is why it isn't done for a whole-library list.
-                item {
-                    AnimatedContent(
-                        targetState = viewMode,
-                        // `using null`, same reasoning as the library-detail stack transition in
-                        // MainActivity: Tracks and Albums content are rarely the same height, and
-                        // AnimatedContent's default SizeTransform would clip/zoom across that
-                        // difference instead of just letting the crossfade play out in place.
-                        transitionSpec = {
-                            if (!viewModeChangedByUser) {
-                                // Skips animating a restored value -- e.g. leaving an album that
-                                // was opened from the Albums tab recomposes this screen fresh, and
-                                // without this guard it visibly played the Tracks-to-Albums wipe
-                                // below as if the user had just switched tabs, instead of it
-                                // simply already having been on Albums.
-                                fadeIn(snap()) togetherWith fadeOut(snap())
-                            } else {
-                                // A directional wipe rather than a plain crossfade -- new content
-                                // slides in from the side matching whichever tab it's coming from,
-                                // old content slides out the opposite way, matching the swipe
-                                // gesture's own left/right sense.
-                                val direction = if (targetState == ArtistViewMode.ALBUMS) 1 else -1
-                                (slideInHorizontally(initialOffsetX = { width -> direction * width }) + fadeIn()) togetherWith
-                                    (slideOutHorizontally(targetOffsetX = { width -> -direction * width }) + fadeOut()) using null
-                            }
-                        },
-                        label = "artistViewMode",
-                        modifier = Modifier.fillMaxWidth()
-                    ) { mode ->
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            when (mode) {
-                                ArtistViewMode.TRACKS -> {
-                                    tracksModeGroups.forEachIndexed { index, group ->
-                                        if (index > 0) {
-                                            Spacer(modifier = Modifier.height(20.dp))
-                                        }
-                                        AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
-                                        group.tracks.forEach { track ->
-                                            DiscTrackRow(
-                                                track = track,
-                                                isPlayingThisTrack = currentTrack?.id == track.id,
-                                                onClick = { onTrackClick(track) },
-                                                onAddToPlaylist = { onAddToPlaylist(track) },
-                                                onShare = { shareTrack(context, track) },
-                                                onTrackDetails = { onOpenTrackDetails(track) },
-                                                leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
-                                                modifier = Modifier.padding(horizontal = 8.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                                ArtistViewMode.ALBUMS -> {
-                                    albumsModeGroups.chunked(3).forEach { row ->
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            row.forEach { group ->
-                                                AlbumSquare(
-                                                    group = group,
-                                                    onClick = { onOpenAlbum(group.name) },
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                            }
-                                            repeat(3 - row.size) {
-                                                Spacer(modifier = Modifier.weight(1f))
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp, end = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            item { modeContent() }
                         }
                     }
                 }
-            }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    // A real (layout-shrinking) padding, not just contentPadding -- contentPadding
+                    // only adds blank scroll space before the first/after the last item, it doesn't
+                    // shrink this LazyColumn's own clip bounds. Since the mini player floats as a
+                    // rounded pill with transparent margins around it (see MiniPlayer.kt), rows laid
+                    // out at the very bottom of a fillMaxSize list showed through those margins at
+                    // any scroll position, not just once scrolled to the true end -- shrinking the
+                    // list's own box means rows can never be placed there at all.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = bottomContentPadding),
+                    contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onSizeChanged { headerHeightPx = it.height }
+                                .graphicsLayer { alpha = 1f - heroCollapseFraction },
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Spacer(modifier = Modifier.height(52.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(180.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Album,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(56.dp)
+                                )
+                                if (heroArtworkUri != null) {
+                                    AsyncImage(
+                                        model = remember(heroArtworkUri) {
+                                            ImageRequest.Builder(context)
+                                                .data(heroArtworkUri)
+                                                .size(Size(360, 360))
+                                                .build()
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ArtistModeToolbar(
+                                viewMode = viewMode,
+                                onViewModeChange = { setViewMode(it) },
+                                albumSort = albumSort,
+                                onAlbumSortChange = { albumSort = it },
+                                onShuffleClick = { onShufflePlay(allTracks) },
+                                animatePill = viewModeChangedByUser,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
 
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 4.dp, top = 4.dp)
-            ) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    // A single lazy item rather than the individual items/groups this used to be laid
+                    // out as: AnimatedContent needs one bounded region it owns to crossfade between,
+                    // it can't animate a transition across a variable range of a LazyColumn's own
+                    // items. The tradeoff is that everything below the header is now composed eagerly
+                    // instead of only the rows currently on screen -- acceptable for a per-artist
+                    // track/album count, but this is why it isn't done for a whole-library list.
+                    item { modeContent() }
+                }
+
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 4.dp, top = 4.dp)
+                ) {
+                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
             }
         }
     }

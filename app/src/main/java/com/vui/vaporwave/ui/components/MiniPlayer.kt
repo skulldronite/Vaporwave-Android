@@ -51,6 +51,7 @@ import coil3.size.Size
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.theme.VaporCyan
 import com.vui.vaporwave.theme.VaporPink
+import com.vui.vaporwave.ui.rememberIsLandscape
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -77,6 +78,11 @@ fun MiniPlayer(
 ) {
     if (track == null) return
 
+    // Compact in landscape: the bar competes with the list for very little screen height.
+    val isLandscape = rememberIsLandscape()
+    val artSize = if (isLandscape) 40.dp else 44.dp
+    val buttonSize = if (isLandscape) 36.dp else 38.dp
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -84,7 +90,7 @@ fun MiniPlayer(
             // gesture nav that inset is thin and barely noticeable, but a legacy 3-button nav bar
             // (tall and opaque, e.g. the Galaxy S9) sits right on top of the bar without this.
             .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = if (isLandscape) 5.dp else 6.dp)
             .draggable(
                 orientation = Orientation.Vertical,
                 state = rememberDraggableState { delta -> onDragDelta(delta) },
@@ -111,13 +117,13 @@ fun MiniPlayer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = if (isLandscape) 7.dp else 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Album Art
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(artSize)
                         .clip(RoundedCornerShape(8.dp))
                         .background(
                             Brush.linearGradient(listOf(VaporPink, VaporCyan))
@@ -141,7 +147,7 @@ fun MiniPlayer(
                                     .build()
                             },
                             contentDescription = "Artwork",
-                            modifier = Modifier.size(44.dp),
+                            modifier = Modifier.size(artSize),
                             contentScale = ContentScale.Crop
                         )
                     }
@@ -173,7 +179,7 @@ fun MiniPlayer(
                 // Skip Previous Button
                 IconButton(
                     onClick = onSkipPreviousClick,
-                    modifier = Modifier.size(38.dp)
+                    modifier = Modifier.size(buttonSize)
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipPrevious,
@@ -188,7 +194,7 @@ fun MiniPlayer(
                 // Play / Pause Button
                 FilledIconButton(
                     onClick = onPlayPauseClick,
-                    modifier = Modifier.size(38.dp),
+                    modifier = Modifier.size(buttonSize),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary
@@ -206,7 +212,7 @@ fun MiniPlayer(
                 // Skip Next Button
                 IconButton(
                     onClick = onSkipNextClick,
-                    modifier = Modifier.size(38.dp)
+                    modifier = Modifier.size(buttonSize)
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipNext,
