@@ -178,6 +178,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearchOpen = MutableStateFlow(false)
     val isSearchOpen: StateFlow<Boolean> = _isSearchOpen.asStateFlow()
 
+    // Seeded from disk by loadPersistedState(). Most-recent-first; committed (see closeSearch())
+    // rather than on every keystroke, so this holds completed searches, not typing noise.
+    private val _searchHistory = MutableStateFlow<List<String>>(emptyList())
+    val searchHistory: StateFlow<List<String>> = _searchHistory.asStateFlow()
+
     // Bumped on every openSearch() call, so the search card can key its one-off "pick a random
     // placeholder" logic on this instead of on its own composition lifetime -- AnimatedVisibility
     // can keep the card's composition alive across a close immediately followed by a reopen (the
@@ -382,6 +387,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _playStats.value = repository.loadPlayStats()
             _showSwipeHint.value = !repository.hasSeenSwipeHint()
             _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
+            _searchHistory.value = repository.loadSearchHistory()
             // useVaporwaveTheme/themeMode are NOT re-read here -- both StateFlows are already
             // seeded synchronously from the same prefs at construction time (see their
             // declarations above), so re-reading here would just be a redundant duplicate load.
@@ -655,6 +661,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun togglePlayPause() {
         val controller = mediaController ?: return
+        android.util.Log.i(
+            "VaporwaveDebug",
+            "togglePlayPause: isPlaying=${controller.isPlaying} playbackState=${controller.playbackState} " +
+                "mediaItemCount=${controller.mediaItemCount} playerError=${controller.playerError}"
+        )
         if (controller.isPlaying) {
             controller.pause()
         } else {
@@ -724,6 +735,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _isShuffleEnabled.value = true
     }
 
+    // Debounced (see below) rather than applied inline -- cancel-and-relaunch so only the last
+    // of a rapid-fire burst (e.g. repeatedly tapping between FX Studio's presets) actually reaches
+    // the engine.
+    private var speedAndPitchApplyJob: Job? = null
+
     /**
      * Sets playback speed and pitch for real-time sound sculpting.
      */
@@ -731,10 +747,29 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val controller = mediaController ?: return
         val clampedSpeed = speed.coerceIn(0.25f, 2.5f)
         val clampedPitch = pitch.coerceIn(0.5f, 2.0f)
-        controller.playbackParameters = PlaybackParameters(clampedSpeed, clampedPitch)
+        // Updated immediately (not waiting on the debounce below) so the slider/preset UI reflects
+        // the tap right away -- onPlaybackParametersChanged would otherwise re-confirm these same
+        // values anyway once the debounced apply actually lands.
         _playbackSpeed.value = clampedSpeed
         _playbackPitch.value = clampedPitch
         _isSlowedAndReverb.value = clampedSpeed.approxEquals(0.85f) && clampedPitch.approxEquals(0.85f)
+
+        // Non-1.0 pitch forces ExoPlayer's audio sink to engage/reconfigure its time-stretch
+        // processor and rebuild the underlying AudioTrack on every call -- rapid repeated taps
+        // (FX Studio's presets apply with no debounce of their own) were reconfiguring it faster
+        // than it could keep up with, including a real Media3 bug in that processor's own buffer
+        // bookkeeping. Kept as short as possible (just enough to collapse a same-frame double-tap,
+        // not long enough to make a single deliberate change feel laggy) -- VaporwavePlaybackService's
+        // stallWatchdog/onPlayerError now catches and self-heals the underlying engine stall in a
+        // couple of seconds regardless if it still fires at this rate, so this doesn't have to be
+        // the only thing standing between a fast slider and dead audio anymore.
+        android.util.Log.i("VaporwaveDebug", "setSpeedAndPitch: requested speed=$speed pitch=$pitch clampedSpeed=$clampedSpeed clampedPitch=$clampedPitch")
+        speedAndPitchApplyJob?.cancel()
+        speedAndPitchApplyJob = viewModelScope.launch {
+            delay(20)
+            android.util.Log.i("VaporwaveDebug", "setSpeedAndPitch: applying speed=$clampedSpeed pitch=$clampedPitch")
+            controller.playbackParameters = PlaybackParameters(clampedSpeed, clampedPitch)
+        }
     }
 
     /**
@@ -809,8 +844,32 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Closes the search card and clears the query so the library isn't left filtered behind it. */
     fun closeSearch() {
+        commitSearchHistory(_searchQuery.value)
         _isSearchOpen.value = false
         _searchQuery.value = ""
+    }
+
+    // Committed on close (not per keystroke) -- most-recent-first, deduped case-insensitively so
+    // re-searching something already in the list just bumps it to the top instead of showing
+    // twice, capped so this can't grow without bound over the life of an install.
+    private fun commitSearchHistory(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
+        val updated = (listOf(trimmed) + _searchHistory.value.filterNot { it.equals(trimmed, ignoreCase = true) })
+            .take(20)
+        _searchHistory.value = updated
+        viewModelScope.launch { repository.saveSearchHistory(updated) }
+    }
+
+    fun removeSearchHistoryEntry(query: String) {
+        val updated = _searchHistory.value.filterNot { it == query }
+        _searchHistory.value = updated
+        viewModelScope.launch { repository.saveSearchHistory(updated) }
+    }
+
+    fun clearSearchHistory() {
+        _searchHistory.value = emptyList()
+        viewModelScope.launch { repository.saveSearchHistory(emptyList()) }
     }
 
     fun openLibraryDetail(detail: LibraryDetail) {

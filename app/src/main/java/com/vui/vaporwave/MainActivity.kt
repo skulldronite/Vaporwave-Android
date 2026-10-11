@@ -40,6 +40,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
@@ -380,6 +381,7 @@ class MainActivity : ComponentActivity() {
         val searchOpenSequence by viewModel.searchOpenSequence.collectAsStateWithLifecycle()
         val libraryDetailStack by viewModel.libraryDetailStack.collectAsStateWithLifecycle()
         val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+        val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
         val tracks by viewModel.filteredTracks.collectAsStateWithLifecycle()
         val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
         val useVaporwaveTheme by viewModel.useVaporwaveTheme.collectAsStateWithLifecycle()
@@ -420,6 +422,14 @@ class MainActivity : ComponentActivity() {
         // LibraryScreen's scrollToTracksSignal param for why this needs to be its own one-shot
         // signal rather than just pushing currentLibraryTab to TRACKS directly.
         var tracksJumpSignal by remember { mutableIntStateOf(0) }
+
+        // Hoisted up here (rather than rememberLazyListState() inside TracksList itself) because
+        // LibraryScreen is NOT among the destinations kept warm in the zero-sized pre-warm Box
+        // below -- unlike Files/Effects/Settings, it's fully disposed and recomposed from scratch
+        // by the destination AnimatedContent whenever the user navigates to FX Studio/Files/
+        // Settings and back. A list state owned inside TracksList's own composition would have
+        // nothing to restore from on that recreation and silently reset to the top every time.
+        val tracksListState = rememberLazyListState()
 
         val topBarTitle = when (destination) {
             AppDestination.LIBRARY -> currentLibraryTab.label
@@ -764,7 +774,8 @@ class MainActivity : ComponentActivity() {
                                 reachabilityPullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
                                 isReachabilityLocked = isOneHandedModeLocked,
-                                scrollToTracksSignal = tracksJumpSignal
+                                scrollToTracksSignal = tracksJumpSignal,
+                                tracksListState = tracksListState
                             )
                         }
                         AppDestination.FILES -> {
@@ -872,7 +883,11 @@ class MainActivity : ComponentActivity() {
                 isPlaying = isPlaying,
                 progress = progressProvider,
                 openSequence = searchOpenSequence,
+                searchHistory = searchHistory,
                 onQueryChange = { viewModel.setSearchQuery(it) },
+                onHistoryEntryClick = { viewModel.setSearchQuery(it) },
+                onRemoveHistoryEntry = { viewModel.removeSearchHistoryEntry(it) },
+                onClearHistory = { viewModel.clearSearchHistory() },
                 onTrackClick = { track -> viewModel.playTrack(track, tracks) },
                 onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
                 onBack = { viewModel.closeSearch() },
@@ -1288,6 +1303,7 @@ class MainActivity : ComponentActivity() {
                 onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) },
                 onOpenEffects = {
                     viewModel.setNowPlayingExpanded(false)
+                    viewModel.closeSearch()
                     viewModel.setDestination(AppDestination.EFFECTS)
                 },
                 onOpenAlbum = {

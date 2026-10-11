@@ -170,7 +170,11 @@ fun LibraryScreen(
     // One-shot signal (bump to request, any distinct value) rather than a plain "target tab"
     // value: see the effect below for why a request needs to be its own channel, separate from
     // currentTab, instead of just comparing currentTab against the pager's position.
-    scrollToTracksSignal: Int = 0
+    scrollToTracksSignal: Int = 0,
+    // Hoisted up to MainActivity rather than rememberLazyListState() inside TracksList -- see the
+    // comment where it's declared there for why this needs to survive this whole screen being
+    // disposed and recomposed (e.g. navigating to FX Studio and back).
+    tracksListState: LazyListState = rememberLazyListState()
 ) {
     val tabs = remember { LibraryTab.entries.toList() }
     val pagerState = rememberPagerState(initialPage = tabs.indexOf(currentTab)) { tabs.size }
@@ -268,7 +272,8 @@ fun LibraryScreen(
                         onShufflePlay = onShufflePlay,
                         onAddToPlaylist = onAddToPlaylist,
                         onShare = { track -> shareTrack(context, track) },
-                        onOpenTrackDetails = onOpenTrackDetails
+                        onOpenTrackDetails = onOpenTrackDetails,
+                        listState = tracksListState
                     )
                 }
                 LibraryTab.PLAYLISTS -> {
@@ -306,7 +311,8 @@ private fun TracksList(
     onAddToPlaylist: (AudioTrack) -> Unit = {},
     onShare: (AudioTrack) -> Unit = {},
     onOpenTrackDetails: (AudioTrack) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     if (tracks.isEmpty()) {
         Box(
@@ -346,11 +352,28 @@ private fun TracksList(
             sortedTracks = withContext(Dispatchers.Default) { sortTracks(tracks, sortOption) }
         }
 
-        val listState = rememberLazyListState()
         val canScroll by remember {
             derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
         }
         val (highlightedTrackId, onAlphabetJump) = rememberTrackHighlight(sortedTracks, listState, indexOffset = 1)
+
+        // Brings the now-playing track into view when returning to this tab after it was started
+        // somewhere this list isn't visible from (Search in particular -- playing a result there
+        // and backing out used to land back on whatever scroll position this list happened to be
+        // at, with no indication of where the playing track actually was). +1 to land on the
+        // right list item: index 0 is the toolbar (see item(key = "toolbar") below), not a track.
+        // Skipped when the row's already on screen so this can't fight the user's own scroll on
+        // every ordinary track change (e.g. skip next/previous while idly browsing this list).
+        LaunchedEffect(currentTrack?.id) {
+            val targetId = currentTrack?.id ?: return@LaunchedEffect
+            val trackIndex = sortedTracks.indexOfFirst { it.id == targetId }
+            if (trackIndex < 0) return@LaunchedEffect
+            val listIndex = trackIndex + 1
+            val alreadyVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == listIndex }
+            if (!alreadyVisible) {
+                listState.animateScrollToItem(listIndex)
+            }
+        }
 
         // The toolbar is a real item (index 0) in the LazyColumn below rather than a separate
         // AnimatedVisibility sibling of a Modifier.weight(1f) list. That older pattern meant the
