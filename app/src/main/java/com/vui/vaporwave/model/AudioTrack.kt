@@ -33,7 +33,13 @@ data class AudioTrack(
     /** Disc number for multi-disc albums, from file metadata. 0 for single-disc/untagged. */
     val discNumber: Int = 0,
     /** Release year from file metadata, straight from MediaStore's own YEAR column. 0 if untagged. */
-    val year: Int = 0
+    val year: Int = 0,
+    /**
+     * Genres this track belongs to, already cleaned/split (see [parseGenres]) -- never empty: an
+     * untagged track carries just [UNKNOWN_GENRE]. A multi-genre tag like "Rock; Metal" yields
+     * each part plus the combined string itself.
+     */
+    val genres: List<String> = listOf(UNKNOWN_GENRE)
 ) {
     /**
      * Human readable format identifier (e.g. FLAC, MP3, WAV, OPUS, AAC, OGG)

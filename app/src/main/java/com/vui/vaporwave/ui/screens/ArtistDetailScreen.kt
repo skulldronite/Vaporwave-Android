@@ -135,6 +135,7 @@ fun ArtistDetailScreen(
     onTrackClick: (AudioTrack) -> Unit,
     onOpenAlbum: (String) -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
+    onAddToQueue: (AudioTrack) -> Unit = {},
     onAddToPlaylist: (AudioTrack) -> Unit,
     onOpenTrackDetails: (AudioTrack) -> Unit,
     // The overlay this screen renders in (see MainActivity) draws its own MiniPlayer as a sibling
@@ -274,6 +275,7 @@ fun ArtistDetailScreen(
                                     track = track,
                                     isPlayingThisTrack = currentTrack?.id == track.id,
                                     onClick = { onTrackClick(track) },
+                                    onAddToQueue = { onAddToQueue(track) },
                                     onAddToPlaylist = { onAddToPlaylist(track) },
                                     onShare = { shareTrack(context, track) },
                                     onTrackDetails = { onOpenTrackDetails(track) },
@@ -460,7 +462,18 @@ fun ArtistDetailScreen(
                                 .graphicsLayer { alpha = 1f - heroCollapseFraction },
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Spacer(modifier = Modifier.height(52.dp))
+                            // Back button is part of the header, so it scrolls away with the title.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = onBack) {
+                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
+                            }
                             Box(
                                 modifier = Modifier
                                     .size(180.dp)
@@ -527,15 +540,6 @@ fun ArtistDetailScreen(
                     // instead of only the rows currently on screen -- acceptable for a per-artist
                     // track/album count, but this is why it isn't done for a whole-library list.
                     item { modeContent() }
-                }
-
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 4.dp, top = 4.dp)
-                ) {
-                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                 }
             }
         }

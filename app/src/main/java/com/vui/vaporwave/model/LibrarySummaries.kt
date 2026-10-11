@@ -15,6 +15,14 @@ data class AlbumSummary(
 )
 
 @Immutable
+data class GenreSummary(
+    val name: String,
+    val trackCount: Int,
+    val artworkUri: Uri?,
+    val latestDateAddedMs: Long = 0L
+)
+
+@Immutable
 data class ArtistSummary(
     val name: String,
     val trackCount: Int,

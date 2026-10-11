@@ -1,5 +1,8 @@
 package com.vui.vaporwave.service
 
+import androidx.media3.exoplayer.source.ShuffleOrder
+import androidx.media3.common.MediaMetadata
+import android.net.Uri
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.audiofx.AudioEffect
@@ -359,6 +362,95 @@ class VaporwavePlaybackService : MediaSessionService() {
         )
     }
 
+    /**
+     * The player's items as indices, in the order they will play -- the shuffled order while
+     * shuffle is on, otherwise just the list order. Walks the timeline the same way the player
+     * itself advances, so it always matches what actually plays next.
+     */
+    private fun playOrder(exoPlayer: ExoPlayer): MutableList<Int> {
+        val timeline = exoPlayer.currentTimeline
+        val order = ArrayList<Int>()
+        if (timeline.isEmpty) return order
+        val shuffle = exoPlayer.shuffleModeEnabled
+        var index = timeline.getFirstWindowIndex(shuffle)
+        while (index != C.INDEX_UNSET) {
+            order.add(index)
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
+        }
+        return order
+    }
+
+    private fun isUserQueued(exoPlayer: ExoPlayer, index: Int): Boolean =
+        exoPlayer.getMediaItemAt(index).mediaMetadata.extras?.getBoolean(EXTRA_USER_QUEUED) == true
+
+    /**
+     * "Add to Queue": the first song added plays right after the current one, and each song added
+     * after that goes behind the ones already added this way -- so they play in the order they
+     * were added, all before whatever was already queued. Works in play order, so it holds with
+     * shuffle on as well (where the item is slotted into the shuffled order explicitly).
+     */
+    private fun addToQueue(args: Bundle) {
+        val exoPlayer = player ?: return
+        val mediaId = args.getString(EXTRA_QUEUE_MEDIA_ID) ?: return
+        val uri = args.getString(EXTRA_QUEUE_URI) ?: return
+        val item = MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(args.getString(EXTRA_QUEUE_TITLE))
+                    .setArtist(args.getString(EXTRA_QUEUE_ARTIST))
+                    .setAlbumTitle(args.getString(EXTRA_QUEUE_ALBUM))
+                    .setArtworkUri(args.getString(EXTRA_QUEUE_ARTWORK)?.let { Uri.parse(it) })
+                    .setExtras(
+                        Bundle().apply {
+                            putBoolean(EXTRA_USER_QUEUED, true)
+                            putLong(EXTRA_QUEUE_UID, System.nanoTime())
+                        }
+                    )
+                    .build()
+            )
+            .build()
+
+        if (exoPlayer.mediaItemCount == 0) {
+            exoPlayer.setMediaItem(item)
+            exoPlayer.prepare()
+            return
+        }
+        val order = playOrder(exoPlayer)
+        val currentPosition = order.indexOf(exoPlayer.currentMediaItemIndex).coerceAtLeast(0)
+        var insertPosition = currentPosition + 1
+        while (insertPosition < order.size && isUserQueued(exoPlayer, order[insertPosition])) {
+            insertPosition++
+        }
+        Log.i(
+            TAG,
+            "addToQueue: count=${exoPlayer.mediaItemCount} shuffle=${exoPlayer.shuffleModeEnabled} " +
+                "currentIndex=${exoPlayer.currentMediaItemIndex} currentPosition=$currentPosition insertPosition=$insertPosition"
+        )
+        if (!exoPlayer.shuffleModeEnabled) {
+            exoPlayer.addMediaItem(insertPosition, item)
+        } else {
+            val newIndex = exoPlayer.mediaItemCount
+            exoPlayer.addMediaItem(item)
+            order.add(insertPosition, newIndex)
+            exoPlayer.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(order.toIntArray(), System.nanoTime()))
+        }
+    }
+
+    /** Moves the item at play-order position [from] to play-order position [to]. */
+    private fun moveQueueItem(from: Int, to: Int) {
+        val exoPlayer = player ?: return
+        val order = playOrder(exoPlayer)
+        if (from !in order.indices || to !in order.indices || from == to) return
+        if (!exoPlayer.shuffleModeEnabled) {
+            exoPlayer.moveMediaItem(from, to)
+        } else {
+            order.add(to, order.removeAt(from))
+            exoPlayer.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(order.toIntArray(), System.nanoTime()))
+        }
+    }
+
     // Coalesces a burst of rapid-fire session-id notifications (e.g. repeatedly tapping a
     // pitch/speed preset, each of which can make ExoPlayer reconfigure its AudioTrack and report
     // a "changed" session id) into a single rebuild once things settle, instead of one rebuild
@@ -451,6 +543,8 @@ class VaporwavePlaybackService : MediaSessionService() {
             val connectionResult = super.onConnect(session, controller)
             val sessionCommands = connectionResult.availableSessionCommands.buildUpon()
                 .add(SessionCommand(COMMAND_EQ_APPLY, Bundle.EMPTY))
+                .add(SessionCommand(COMMAND_QUEUE_ADD, Bundle.EMPTY))
+                .add(SessionCommand(COMMAND_QUEUE_MOVE, Bundle.EMPTY))
                 .build()
             // Media3 1.11's super.onConnect() default dropped to a read-only player command set
             // (no COMMAND_PLAY_PAUSE, seek, etc.) unless a controller is explicitly trusted -- this
@@ -473,6 +567,14 @@ class VaporwavePlaybackService : MediaSessionService() {
                 applyDesiredEqState()
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
+            if (customCommand.customAction == COMMAND_QUEUE_ADD) {
+                addToQueue(args)
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand.customAction == COMMAND_QUEUE_MOVE) {
+                moveQueueItem(args.getInt(EXTRA_QUEUE_FROM, -1), args.getInt(EXTRA_QUEUE_TO, -1))
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
             return super.onCustomCommand(session, controller, customCommand, args)
         }
     }
@@ -481,6 +583,20 @@ class VaporwavePlaybackService : MediaSessionService() {
         const val COMMAND_EQ_APPLY = "com.vui.vaporwave.eq.APPLY"
         const val EXTRA_EQ_ENABLED = "enabled"
         const val EXTRA_EQ_GAINS = "gains"
+        const val COMMAND_QUEUE_ADD = "com.vui.vaporwave.queue.ADD"
+        const val COMMAND_QUEUE_MOVE = "com.vui.vaporwave.queue.MOVE"
+        const val EXTRA_QUEUE_MEDIA_ID = "mediaId"
+        const val EXTRA_QUEUE_URI = "uri"
+        const val EXTRA_QUEUE_TITLE = "title"
+        const val EXTRA_QUEUE_ARTIST = "artist"
+        const val EXTRA_QUEUE_ALBUM = "album"
+        const val EXTRA_QUEUE_ARTWORK = "artwork"
+        const val EXTRA_QUEUE_FROM = "from"
+        const val EXTRA_QUEUE_TO = "to"
+        /** MediaMetadata extra flagging an item that was added through "Add to Queue". */
+        const val EXTRA_USER_QUEUED = "com.vui.vaporwave.userQueued"
+        /** MediaMetadata extra giving every queued item a unique, reorder-proof identity. */
+        const val EXTRA_QUEUE_UID = "com.vui.vaporwave.queueUid"
         private const val TAG = "VaporwaveDebug"
     }
 }

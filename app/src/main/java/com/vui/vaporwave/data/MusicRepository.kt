@@ -1,10 +1,12 @@
 package com.vui.vaporwave.data
 
+import com.vui.vaporwave.model.CustomThemeSettings
 import android.content.ContentUris
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
@@ -21,6 +23,7 @@ import com.vui.vaporwave.model.LyricsResult
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.model.RecentAudioEntry
+import com.vui.vaporwave.model.parseGenres
 import com.vui.vaporwave.model.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -56,7 +59,14 @@ class MusicRepository(private val context: Context) {
             MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.TRACK,
             MediaStore.Audio.Media.YEAR
-        )
+        ) + if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // The GENRE column on the audio table only exists from Android 11 (API 30).
+            arrayOf(MediaStore.Audio.AudioColumns.GENRE)
+        } else {
+            emptyArray()
+        }
+        // Android 10 has no such column, so genres come from MediaStore's separate genres table.
+        val legacyGenresByTrackId = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) queryLegacyGenres() else emptyMap()
 
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 5000"
         val sortOrder = "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC"
@@ -82,6 +92,11 @@ class MusicRepository(private val context: Context) {
                 val dateAddedCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
                 val trackCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
                 val yearCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.YEAR)
+                val genreCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    it.getColumnIndex(MediaStore.Audio.AudioColumns.GENRE)
+                } else {
+                    -1
+                }
 
                 while (it.moveToNext()) {
                     val id = it.getLong(idCol)
@@ -102,6 +117,7 @@ class MusicRepository(private val context: Context) {
                     val trackNumber = trackColValue % 1000
                     val discNumber = trackColValue / 1000
                     val year = it.getInt(yearCol)
+                    val rawGenre = if (genreCol >= 0) it.getString(genreCol) else legacyGenresByTrackId[id]
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -138,7 +154,8 @@ class MusicRepository(private val context: Context) {
                             dateAddedMs = dateAddedMs,
                             trackNumber = trackNumber,
                             discNumber = discNumber,
-                            year = year
+                            year = year,
+                            genres = parseGenres(rawGenre)
                         )
                     )
                 }
@@ -148,6 +165,39 @@ class MusicRepository(private val context: Context) {
         }
 
         tracks
+    }
+
+    /**
+     * Android 10 only: track id -> genre, built from MediaStore's genres table and each genre's
+     * members. Several genres on one track are joined with ';' so parseGenres splits them again.
+     */
+    private fun queryLegacyGenres(): Map<Long, String> {
+        val result = HashMap<Long, String>()
+        try {
+            context.contentResolver.query(
+                MediaStore.Audio.Genres.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Audio.Genres._ID, MediaStore.Audio.Genres.NAME),
+                null, null, null
+            )?.use { genres ->
+                while (genres.moveToNext()) {
+                    val genreId = genres.getLong(0)
+                    val genreName = genres.getString(1) ?: continue
+                    context.contentResolver.query(
+                        MediaStore.Audio.Genres.Members.getContentUri("external", genreId),
+                        arrayOf(MediaStore.Audio.Genres.Members.AUDIO_ID),
+                        null, null, null
+                    )?.use { members ->
+                        while (members.moveToNext()) {
+                            val trackId = members.getLong(0)
+                            result[trackId] = result[trackId]?.let { existing -> "$existing;$genreName" } ?: genreName
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return result
     }
 
     /**
@@ -737,6 +787,42 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putBoolean(KEY_USE_OLED_BLACK, enabled).apply()
     }
 
+    // Custom theme colour (separate for light and dark), the recently used colours, and how many
+    // times the "Now Playing keeps using album art colours" note has been shown.
+    fun loadCustomTheme(): CustomThemeSettings = CustomThemeSettings(
+        lightColor = if (prefs.contains(KEY_CUSTOM_LIGHT_COLOR)) prefs.getInt(KEY_CUSTOM_LIGHT_COLOR, 0) else null,
+        darkColor = if (prefs.contains(KEY_CUSTOM_DARK_COLOR)) prefs.getInt(KEY_CUSTOM_DARK_COLOR, 0) else null
+    )
+
+    fun saveCustomTheme(settings: CustomThemeSettings) {
+        prefs.edit().apply {
+            settings.lightColor?.let { putInt(KEY_CUSTOM_LIGHT_COLOR, it) } ?: remove(KEY_CUSTOM_LIGHT_COLOR)
+            settings.darkColor?.let { putInt(KEY_CUSTOM_DARK_COLOR, it) } ?: remove(KEY_CUSTOM_DARK_COLOR)
+        }.apply()
+    }
+
+    fun loadRecentColors(): List<Int> =
+        prefs.getString(KEY_RECENT_COLORS, "").orEmpty().split(",").mapNotNull { it.toIntOrNull() }
+
+    fun saveRecentColors(colors: List<Int>) {
+        prefs.edit().putString(KEY_RECENT_COLORS, colors.joinToString(",")).apply()
+    }
+
+    fun loadArtworkNoteShows(): Int = prefs.getInt(KEY_ARTWORK_NOTE_SHOWS, 0)
+
+    fun saveArtworkNoteShows(count: Int) {
+        prefs.edit().putInt(KEY_ARTWORK_NOTE_SHOWS, count).apply()
+    }
+
+    // On by default: a fresh install gets the artwork-coloured Now Playing.
+    suspend fun loadUseArtworkColors(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_USE_ARTWORK_COLORS, true)
+    }
+
+    suspend fun saveUseArtworkColors(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_USE_ARTWORK_COLORS, enabled).apply()
+    }
+
     /** Synchronous, non-suspend read -- see useVaporwaveThemeSync's doc for why (used by
      *  MainActivity to compute the launch window background before Compose runs). */
     fun useOledBlackSync(): Boolean = prefs.getBoolean(KEY_USE_OLED_BLACK, false)
@@ -882,6 +968,28 @@ class MusicRepository(private val context: Context) {
         prefs.getBoolean(KEY_EQ_ENABLED, false)
     }
 
+    // Playback preferences that should survive closing the app. Plain synchronous reads/writes
+    // (apply() is async on its own) since they're tiny and the view model reads them while
+    // connecting to the playback service.
+    fun savePlaybackSpeedPitch(speed: Float, pitch: Float) {
+        prefs.edit().putFloat(KEY_PLAYBACK_SPEED, speed).putFloat(KEY_PLAYBACK_PITCH, pitch).apply()
+    }
+
+    fun loadPlaybackSpeedPitch(): Pair<Float, Float> =
+        prefs.getFloat(KEY_PLAYBACK_SPEED, 1f) to prefs.getFloat(KEY_PLAYBACK_PITCH, 1f)
+
+    fun saveShuffleEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SHUFFLE_ENABLED, enabled).apply()
+    }
+
+    fun loadShuffleEnabled(): Boolean = prefs.getBoolean(KEY_SHUFFLE_ENABLED, false)
+
+    fun saveRepeatMode(mode: Int) {
+        prefs.edit().putInt(KEY_REPEAT_MODE, mode).apply()
+    }
+
+    fun loadRepeatMode(): Int = prefs.getInt(KEY_REPEAT_MODE, 0)
+
     suspend fun saveEqEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
         prefs.edit().putBoolean(KEY_EQ_ENABLED, enabled).apply()
     }
@@ -917,6 +1025,15 @@ class MusicRepository(private val context: Context) {
         private const val KEY_USE_OLED_BLACK = "use_oled_black"
         private const val KEY_SKIP_SPLASH_SCREEN = "skip_splash_screen"
         private const val KEY_EQ_ENABLED = "eq_enabled"
+        private const val KEY_CUSTOM_LIGHT_COLOR = "custom_theme_light_color"
+        private const val KEY_CUSTOM_DARK_COLOR = "custom_theme_dark_color"
+        private const val KEY_RECENT_COLORS = "recent_theme_colors"
+        private const val KEY_ARTWORK_NOTE_SHOWS = "artwork_colors_note_shows"
+        private const val KEY_USE_ARTWORK_COLORS = "use_artwork_colors"
+        private const val KEY_PLAYBACK_SPEED = "playback_speed"
+        private const val KEY_PLAYBACK_PITCH = "playback_pitch"
+        private const val KEY_SHUFFLE_ENABLED = "shuffle_enabled"
+        private const val KEY_REPEAT_MODE = "repeat_mode"
         private const val KEY_EQ_BAND_GAINS = "eq_band_gains_json"
         private const val KEY_LYRICS_TREE_URI = "lyrics_tree_uri"
 

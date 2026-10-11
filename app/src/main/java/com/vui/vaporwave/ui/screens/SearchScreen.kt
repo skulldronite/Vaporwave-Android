@@ -1,5 +1,8 @@
 package com.vui.vaporwave.ui.screens
 
+import com.vui.vaporwave.ui.components.AddToChoiceDialog
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
@@ -117,6 +120,8 @@ fun SearchScreen(
      * lifetime isn't reliable for that.
      */
     openSequence: Int,
+    /** False when this card is being brought back (not freshly opened), so it shouldn't raise the keyboard. */
+    autoFocus: Boolean = true,
     /** Most-recent-first list of previously completed searches, shown while [query] is blank. */
     searchHistory: List<String> = emptyList(),
     onHistoryEntryClick: (String) -> Unit = {},
@@ -125,6 +130,10 @@ fun SearchScreen(
     onQueryChange: (String) -> Unit,
     onTrackClick: (AudioTrack) -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
+    /** From a result's plus button's "Playlist" choice. */
+    onAddToPlaylist: (AudioTrack) -> Unit,
+    /** From a result's plus button's "Queue" choice (plays after the current song). */
+    onAddToQueue: (AudioTrack) -> Unit,
     onBack: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onSkipNextClick: () -> Unit,
@@ -140,7 +149,7 @@ fun SearchScreen(
     // Opening the card should put the cursor straight in the field -- the user tapped search
     // because they intend to type immediately.
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+        if (autoFocus) focusRequester.requestFocus()
     }
 
     var sortOption by remember { mutableStateOf(SearchSortOption.TRACK_NAME) }
@@ -182,10 +191,25 @@ fun SearchScreen(
     // player's actual rendered height -- see the matching pattern/comment in LibraryScreen's
     // DetailTrackList, which this mirrors.
     val miniPlayerDensity = LocalDensity.current
+    // The result whose plus button was tapped -- the add-to chooser is open while this is set.
+    var addTarget by remember { mutableStateOf<AudioTrack?>(null) }
+    val toastContext = LocalContext.current
     val isLandscape = rememberIsLandscape()
     val imeInsets = WindowInsets.ime
     val isImeOpen by remember { derivedStateOf { imeInsets.getBottom(miniPlayerDensity) > 0 } }
     var miniPlayerHeight by remember { mutableStateOf(0.dp) }
+
+    addTarget?.let { target ->
+        AddToChoiceDialog(
+            track = target,
+            onAddToPlaylist = { onAddToPlaylist(target) },
+            onAddToQueue = {
+                onAddToQueue(target)
+                Toast.makeText(toastContext, "Added to queue", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { addTarget = null }
+        )
+    }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -357,6 +381,10 @@ fun SearchScreen(
                                 track = track,
                                 isPlayingThisTrack = currentTrack?.id == track.id,
                                 isHighlighted = track.id == closestMatchId && track.id != dismissedHighlightId,
+                                onAdd = {
+                                    keyboardController?.hide()
+                                    addTarget = track
+                                },
                                 onClick = {
                                     keyboardController?.hide()
                                     dismissedHighlightId = closestMatchId
@@ -489,8 +517,7 @@ private fun findClosestMatch(tracks: List<AudioTrack>, query: String): AudioTrac
 enum class SearchSortOption(val label: String, val icon: ImageVector) {
     TRACK_NAME("Track Name", Icons.Default.MusicNote),
     ARTIST("Artist", Icons.Default.Person),
-    ALBUM("Album", Icons.Default.Album),
-    FORMAT("Format", Icons.Default.GraphicEq)
+    ALBUM("Album", Icons.Default.Album)
 }
 
 enum class SearchSortDirection(val label: String, val icon: ImageVector) {
@@ -507,7 +534,6 @@ private fun sortSearchResults(
         SearchSortOption.TRACK_NAME -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
         SearchSortOption.ARTIST -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
         SearchSortOption.ALBUM -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.album })
-        SearchSortOption.FORMAT -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.formatBadge })
     }
     return if (sortDirection == SearchSortDirection.DESCENDING) sorted.asReversed() else sorted
 }

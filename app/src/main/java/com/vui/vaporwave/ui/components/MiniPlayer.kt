@@ -1,5 +1,10 @@
 package com.vui.vaporwave.ui.components
 
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.tappableElement
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -78,6 +83,18 @@ fun MiniPlayer(
 ) {
     if (track == null) return
 
+    // Three-button navigation (a tappable bar of home/back/recents buttons, rather than gestures) draws
+    // its own fixed bar that doesn't adopt the app's colours -- on a light theme, the bar's shadow
+    // against it looks wrong (seen on a Galaxy S9, Android 10). So in light mode with that navigation
+    // style the shadow is dropped. Gesture navigation reports no tappable inset, which tells the two apart.
+    val density = LocalDensity.current
+    val tappable = WindowInsets.tappableElement
+    val usesThreeButtonNavigation = tappable.getBottom(density) > 0 ||
+        tappable.getLeft(density, LayoutDirection.Ltr) > 0 ||
+        tappable.getRight(density, LayoutDirection.Ltr) > 0
+    val isLightTheme = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    val dropShadow = !(usesThreeButtonNavigation && isLightTheme)
+
     // Compact in landscape: the bar competes with the list for very little screen height.
     val isLandscape = rememberIsLandscape()
     val artSize = if (isLandscape) 40.dp else 44.dp
@@ -99,7 +116,7 @@ fun MiniPlayer(
             .clickable(onClick = onExpandClick),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shadowElevation = 8.dp,
+        shadowElevation = if (dropShadow) 8.dp else 0.dp,
         tonalElevation = 4.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
