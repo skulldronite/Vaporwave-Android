@@ -1,5 +1,9 @@
 package com.vui.vaporwave.ui
 
+import com.vui.vaporwave.model.CustomThemeSettings
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.media3.common.C
+import com.vui.vaporwave.model.QueueEntry
 import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
@@ -24,6 +28,8 @@ import com.vui.vaporwave.data.tagging.TagSaveResult
 import com.vui.vaporwave.model.AlbumSummary
 import com.vui.vaporwave.model.ArtistSummary
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.model.buildGenreSummaries
+import com.vui.vaporwave.model.GenreSummary
 import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
@@ -158,6 +164,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
     val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
 
+    // The playback queue in the order it will play (shuffled order while shuffle is on), rebuilt
+    // from the player's own timeline whenever that, the shuffle mode or the current item changes.
+    private val _queue = MutableStateFlow<List<QueueEntry>>(emptyList())
+    private var nextQueueUid = 1L
+    val queue: StateFlow<List<QueueEntry>> = _queue.asStateFlow()
+
     private val _isShuffleEnabled = MutableStateFlow(false)
     val isShuffleEnabled: StateFlow<Boolean> = _isShuffleEnabled.asStateFlow()
 
@@ -215,6 +227,25 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _useOledBlack = MutableStateFlow(false)
     val useOledBlack: StateFlow<Boolean> = _useOledBlack.asStateFlow()
+
+    // The custom theme colour, read synchronously so the very first frame already has it (same
+    // reasoning as the theme flags above), plus the last few colours used in the picker.
+    private val _customTheme = MutableStateFlow(repository.loadCustomTheme())
+    val customTheme: StateFlow<CustomThemeSettings> = _customTheme.asStateFlow()
+
+    private val _recentColors = MutableStateFlow(repository.loadRecentColors())
+    val recentColors: StateFlow<List<Int>> = _recentColors.asStateFlow()
+
+    // The one-line note shown under Album Art Colors while a custom theme colour is active (Now
+    // Playing keeps using the artwork's colours rather than the theme colour). Shown on at most two
+    // visits to Settings, and only while the situation it describes is true.
+    private val _artworkColorsNoteVisible = MutableStateFlow(false)
+    val artworkColorsNoteVisible: StateFlow<Boolean> = _artworkColorsNoteVisible.asStateFlow()
+    private var artworkNoteCountedThisVisit = false
+
+    // Tints Now Playing with the playing song's artwork colour. On until the saved value loads.
+    private val _useArtworkColors = MutableStateFlow(true)
+    val useArtworkColors: StateFlow<Boolean> = _useArtworkColors.asStateFlow()
 
     private val _skipSplashScreen = MutableStateFlow(false)
     val skipSplashScreen: StateFlow<Boolean> = _skipSplashScreen.asStateFlow()
@@ -289,6 +320,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // Not exposed publicly: the UI only ever consumes the mostPlayed/recentlyPlayed views below.
     private val _playStats = MutableStateFlow<Map<Long, PlayStat>>(emptyMap())
+
+    // Genres, each with the cover of its most played track (see buildGenreSummaries).
+    val genres: StateFlow<List<GenreSummary>> = combine(_allTracks, _playStats) { tracks, stats ->
+        buildGenreSummaries(tracks, stats)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val recentlyAddedTracks: StateFlow<List<AudioTrack>> = _allTracks.map { tracks ->
         tracks.filter { it.dateAddedMs > 0L }
@@ -393,6 +429,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             // declarations above), so re-reading here would just be a redundant duplicate load.
             _useMaterialYou.value = repository.loadUseMaterialYou()
             _useOledBlack.value = repository.loadUseOledBlack()
+            _useArtworkColors.value = repository.loadUseArtworkColors()
             _skipSplashScreen.value = repository.loadSkipSplashScreen()
             _isEqEnabled.value = repository.loadEqEnabled()
             repository.loadEqBandGains()?.let { _eqBandGains.value = it }
@@ -430,6 +467,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val controller = future.get()
                 mediaController = controller
                 setupPlayerListener(controller)
+                restorePlaybackPreferences(controller)
                 // The service's own in-memory equalizer state resets to defaults whenever its
                 // process is (re)created, independent of loadPersistedState()'s own timing --
                 // reapplying here covers a fresh/restarted service reconnecting after the
@@ -439,6 +477,28 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 e.printStackTrace()
             }
         }, MoreExecutors.directExecutor())
+    }
+
+    /**
+     * Re-applies the speed/pitch, shuffle and repeat settings saved the last time they were
+     * changed. Compared against what the player is already doing first, so reconnecting to a
+     * service that's still running (and already has them) changes nothing.
+     */
+    private fun restorePlaybackPreferences(controller: Player) {
+        val (speed, pitch) = repository.loadPlaybackSpeedPitch()
+        if (!controller.playbackParameters.speed.approxEquals(speed) || !controller.playbackParameters.pitch.approxEquals(pitch)) {
+            setSpeedAndPitch(speed, pitch)
+        }
+        val shuffle = repository.loadShuffleEnabled()
+        if (controller.shuffleModeEnabled != shuffle) {
+            controller.shuffleModeEnabled = shuffle
+            _isShuffleEnabled.value = shuffle
+        }
+        val repeat = repository.loadRepeatMode()
+        if (controller.repeatMode != repeat) {
+            controller.repeatMode = repeat
+            _repeatMode.value = repeat
+        }
     }
 
     private fun setupPlayerListener(player: Player) {
@@ -457,8 +517,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         // overwritten by applyLoadedTracks' own "first scanned track" default once the library
         // scan finished, instead of showing the track actually playing.
         restoreCurrentTrackFromPlayer(player)
+        refreshQueue(player)
 
         player.addListener(object : Player.Listener {
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                refreshQueue(player)
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
                 if (isPlaying) {
@@ -479,6 +544,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val trackId = mediaItem?.mediaId?.toLongOrNull()
                 val track = trackId?.let { trackById[it] ?: externalTrackById[it] }
                 _currentTrack.value = track
+                refreshQueue(player)
                 _duration.value = player.duration.coerceAtLeast(0L)
                 pendingPlayCreditJob?.cancel()
                 pendingPlayCreditJob = track?.let {
@@ -500,6 +566,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 _isShuffleEnabled.value = shuffleModeEnabled
+                refreshQueue(player)
             }
         })
 
@@ -518,20 +585,106 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun restoreCurrentTrackFromPlayer(player: Player) {
         val mediaItem = player.currentMediaItem ?: return
-        val trackId = mediaItem.mediaId.toLongOrNull() ?: return
+        _currentTrack.value = trackForMediaItem(mediaItem, player.duration.coerceAtLeast(0L)) ?: return
+    }
+
+    /**
+     * The library track for a media item, or -- when it isn't in the library (yet) -- a placeholder
+     * built from the item's own embedded metadata.
+     */
+    private fun trackForMediaItem(mediaItem: MediaItem, durationMs: Long): AudioTrack? {
+        val trackId = mediaItem.mediaId.toLongOrNull() ?: return null
         val known = trackById[trackId] ?: externalTrackById[trackId]
-        _currentTrack.value = known ?: run {
-            val metadata = mediaItem.mediaMetadata
-            AudioTrack(
-                id = trackId,
-                title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown",
-                artist = metadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown Artist",
-                album = metadata.albumTitle?.toString().orEmpty(),
-                durationMs = player.duration.coerceAtLeast(0L),
-                contentUri = mediaItem.localConfiguration?.uri,
-                artworkUri = metadata.artworkUri,
-                mimeType = "audio/*"
-            )
+        if (known != null) return known
+        val metadata = mediaItem.mediaMetadata
+        return AudioTrack(
+            id = trackId,
+            title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown",
+            artist = metadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown Artist",
+            album = metadata.albumTitle?.toString().orEmpty(),
+            durationMs = durationMs,
+            contentUri = mediaItem.localConfiguration?.uri,
+            artworkUri = metadata.artworkUri,
+            mimeType = "audio/*"
+        )
+    }
+
+    private fun refreshQueue(player: Player) {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) {
+            _queue.value = emptyList()
+            return
+        }
+        val shuffle = player.shuffleModeEnabled
+        val currentIndex = player.currentMediaItemIndex
+        val entries = ArrayList<QueueEntry>(timeline.windowCount)
+        var index = timeline.getFirstWindowIndex(shuffle)
+        while (index != C.INDEX_UNSET) {
+            val mediaItem = player.getMediaItemAt(index)
+            val track = trackForMediaItem(mediaItem, 0L)
+            if (track != null) {
+                entries.add(
+                    QueueEntry(
+                        key = mediaItem.mediaMetadata.extras
+                            ?.getLong(VaporwavePlaybackService.EXTRA_QUEUE_UID, 0L)?.takeIf { it != 0L }
+                            ?: -(index + 1L),
+                        mediaItemIndex = index,
+                        track = track,
+                        isCurrent = index == currentIndex,
+                        isUserQueued = mediaItem.mediaMetadata.extras
+                            ?.getBoolean(VaporwavePlaybackService.EXTRA_USER_QUEUED) == true
+                    )
+                )
+            }
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
+        }
+        _queue.value = entries
+    }
+
+    /** Jumps playback to the queue entry at play-order position [position]. */
+    fun playQueueEntry(position: Int) {
+        val controller = mediaController ?: return
+        val entry = _queue.value.getOrNull(position) ?: return
+        controller.seekToDefaultPosition(entry.mediaItemIndex)
+        controller.play()
+    }
+
+    /** Moves a queue entry between play-order positions (the service reorders the real queue). */
+    fun moveQueueItem(from: Int, to: Int) {
+        val controller = mediaController ?: return
+        val args = Bundle().apply {
+            putInt(VaporwavePlaybackService.EXTRA_QUEUE_FROM, from)
+            putInt(VaporwavePlaybackService.EXTRA_QUEUE_TO, to)
+        }
+        controller.sendCustomCommand(SessionCommand(VaporwavePlaybackService.COMMAND_QUEUE_MOVE, Bundle.EMPTY), args)
+    }
+
+    /** "Add to Queue": plays after the current song, behind anything already added this way. */
+    fun addToQueue(track: AudioTrack) {
+        val controller = mediaController ?: return
+        val uri = track.contentUri ?: return
+        val args = Bundle().apply {
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_MEDIA_ID, track.id.toString())
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_URI, uri.toString())
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_TITLE, track.title)
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_ARTIST, track.artist)
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_ALBUM, track.album)
+            putString(VaporwavePlaybackService.EXTRA_QUEUE_ARTWORK, track.artworkUri?.toString())
+        }
+        val addCommand = SessionCommand(VaporwavePlaybackService.COMMAND_QUEUE_ADD, Bundle.EMPTY)
+        if (controller.mediaItemCount > 0) {
+            controller.sendCustomCommand(addCommand, args)
+            return
+        }
+        // Nothing loaded yet (cold launch): load the library first so there's a current song to
+        // follow, and only send the add once that load has actually landed -- sent straight after,
+        // the two raced and the song could be slotted in before the queue it belongs to existed.
+        viewModelScope.launch {
+            ensureQueueLoaded()
+            withTimeoutOrNull(3_000L) {
+                while (controller.mediaItemCount == 0) delay(20)
+            }
+            controller.sendCustomCommand(addCommand, args)
         }
     }
 
@@ -627,6 +780,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playTrack(track: AudioTrack, playlist: List<AudioTrack> = _allTracks.value) {
+        loadQueue(track, playlist, play = true)
+    }
+
+    /**
+     * Cold launch leaves the player with nothing loaded (the mini player only *shows* the last
+     * track), so the queue would be blank. Loads the library with that track selected -- paused, not
+     * playing -- so there's a real queue to show, add to and reorder.
+     */
+    fun ensureQueueLoaded() {
+        val controller = mediaController ?: return
+        if (controller.mediaItemCount > 0) return
+        val track = _currentTrack.value ?: return
+        val library = _allTracks.value
+        loadQueue(track, if (library.any { it.id == track.id }) library else listOf(track), play = false)
+    }
+
+    private fun loadQueue(track: AudioTrack, playlist: List<AudioTrack>, play: Boolean) {
         val controller = mediaController ?: return
         currentPlaylist = playlist
         _currentTrack.value = track
@@ -649,6 +819,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         .setArtist(item.artist)
                         .setAlbumTitle(item.album)
                         .setArtworkUri(item.artworkUri)
+                        // A unique id per queue slot, so the queue UI can tell rows apart (and keep
+                        // them the same rows) while they're reordered.
+                        .setExtras(Bundle().apply { putLong(VaporwavePlaybackService.EXTRA_QUEUE_UID, nextQueueUid++) })
                         .build()
                 )
                 .build()
@@ -656,7 +829,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         controller.setMediaItems(mediaItems, startIndex, 0L)
         controller.prepare()
-        controller.play()
+        if (play) controller.play()
     }
 
     fun togglePlayPause() {
@@ -714,6 +887,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
         controller.repeatMode = newMode
         _repeatMode.value = newMode
+        repository.saveRepeatMode(newMode)
     }
 
     fun toggleShuffle() {
@@ -721,6 +895,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val newShuffle = !controller.shuffleModeEnabled
         controller.shuffleModeEnabled = newShuffle
         _isShuffleEnabled.value = newShuffle
+        repository.saveShuffleEnabled(newShuffle)
     }
 
     /**
@@ -732,6 +907,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val randomTrack = pool.random()
         playTrack(randomTrack, pool)
         mediaController?.shuffleModeEnabled = true
+        repository.saveShuffleEnabled(true)
         _isShuffleEnabled.value = true
     }
 
@@ -753,6 +929,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _playbackSpeed.value = clampedSpeed
         _playbackPitch.value = clampedPitch
         _isSlowedAndReverb.value = clampedSpeed.approxEquals(0.85f) && clampedPitch.approxEquals(0.85f)
+        repository.savePlaybackSpeedPitch(clampedSpeed, clampedPitch)
 
         // Non-1.0 pitch forces ExoPlayer's audio sink to engage/reconfigure its time-stretch
         // processor and rebuild the underlying AudioTrack on every call -- rapid repeated taps
@@ -876,6 +1053,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _libraryDetailStack.value = _libraryDetailStack.value + detail
     }
 
+    /** Replaces the whole detail stack (used to put it back after a page was opened over it). */
+    fun setLibraryDetailStack(stack: List<LibraryDetail>) {
+        _libraryDetailStack.value = stack
+    }
+
     /** Pops the top of the stack -- closes the overlay outright only once it empties out. */
     fun closeLibraryDetail() {
         _libraryDetailStack.value = _libraryDetailStack.value.dropLast(1)
@@ -914,6 +1096,51 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setUseMaterialYou(enabled: Boolean) {
         _useMaterialYou.value = enabled
         viewModelScope.launch { repository.saveUseMaterialYou(enabled) }
+    }
+
+    fun saveCustomTheme(settings: CustomThemeSettings) {
+        _customTheme.value = settings
+        repository.saveCustomTheme(settings)
+        val recents = (listOfNotNull(settings.lightColor, settings.darkColor) + _recentColors.value)
+            .distinct()
+            .take(9)
+        _recentColors.value = recents
+        repository.saveRecentColors(recents)
+    }
+
+    /**
+     * Called whenever it might matter: [active] is whether the situation the note describes holds
+     * right now, [onSettings] whether the Settings page is the one on screen. The first time per
+     * visit that both are true it counts as a showing (two in total, ever); leaving Settings ends the
+     * visit.
+     */
+    fun updateArtworkColorsNote(active: Boolean, onSettings: Boolean) {
+        if (!onSettings) {
+            artworkNoteCountedThisVisit = false
+            _artworkColorsNoteVisible.value = false
+            return
+        }
+        if (!active) {
+            _artworkColorsNoteVisible.value = false
+            return
+        }
+        if (!artworkNoteCountedThisVisit) {
+            artworkNoteCountedThisVisit = true
+            val shown = repository.loadArtworkNoteShows()
+            if (shown < 2) {
+                repository.saveArtworkNoteShows(shown + 1)
+                _artworkColorsNoteVisible.value = true
+            }
+        }
+    }
+
+    fun dismissArtworkColorsNote() {
+        _artworkColorsNoteVisible.value = false
+    }
+
+    fun setUseArtworkColors(enabled: Boolean) {
+        _useArtworkColors.value = enabled
+        viewModelScope.launch { repository.saveUseArtworkColors(enabled) }
     }
 
     fun setUseOledBlack(enabled: Boolean) {

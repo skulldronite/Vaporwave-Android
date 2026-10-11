@@ -10,8 +10,8 @@ android {
         applicationId = "com.vui.vaporwave"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.4.3"
+        versionCode = 3
+        versionName = "2.0.0"
     }
 
     buildTypes {
@@ -111,6 +111,8 @@ dependencies {
 
   // Coil for Album Artwork loading
   implementation(libs.coil.compose)
+  // Generates a full Material 3 palette from a single picked colour (the custom Theme colour).
+  implementation(libs.material.kolor)
 
   // Extended Material 3 Icons
   implementation(libs.androidx.compose.material.icons.extended)

@@ -1,5 +1,7 @@
 package com.vui.vaporwave.ui.components
 
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -62,9 +64,12 @@ fun TrackItem(
     /** Shows the track's formatted duration just before the overflow menu (e.g. Favourites). */
     showDuration: Boolean = false,
     /** Null hides the trailing overflow menu entirely (e.g. rows that don't support it yet). */
+    onAddToQueue: (() -> Unit)? = null,
     onAddToPlaylist: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
-    onTrackDetails: (() -> Unit)? = null
+    onTrackDetails: (() -> Unit)? = null,
+    /** Non-null shows a plus button at the end of the row (search results use it for add-to-playlist/queue). */
+    onAdd: (() -> Unit)? = null
 ) {
     var isMenuExpanded by remember { mutableStateOf(false) }
     val backgroundColor by animateColorAsState(
@@ -185,7 +190,17 @@ fun TrackItem(
                 )
             }
 
-            if (onAddToPlaylist != null || onShare != null || onTrackDetails != null) {
+            if (onAdd != null) {
+                IconButton(onClick = onAdd, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Add to playlist or queue",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            if (onAddToQueue != null || onAddToPlaylist != null || onShare != null || onTrackDetails != null) {
                 Box {
                     IconButton(onClick = { isMenuExpanded = true }, modifier = Modifier.size(32.dp)) {
                         Icon(
@@ -198,6 +213,13 @@ fun TrackItem(
                         expanded = isMenuExpanded,
                         onDismissRequest = { isMenuExpanded = false }
                     ) {
+                        if (onAddToQueue != null) {
+                            DropdownMenuItem(
+                                text = { Text("Add to Queue") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
+                                onClick = { isMenuExpanded = false; onAddToQueue() }
+                            )
+                        }
                         if (onAddToPlaylist != null) {
                             DropdownMenuItem(
                                 text = { Text("Add to Playlist") },

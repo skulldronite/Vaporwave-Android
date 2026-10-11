@@ -1,5 +1,8 @@
 package com.vui.vaporwave
 
+import com.vui.vaporwave.ui.components.ColourPickerDialog
+import androidx.compose.ui.platform.LocalFocusManager
+import com.vui.vaporwave.model.UNKNOWN_GENRE
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -21,6 +24,7 @@ import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.animation.AnimatedContent
@@ -97,6 +101,7 @@ import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.ThemeMode
 import com.vui.vaporwave.theme.VaporwaveTheme
+import com.vui.vaporwave.model.isInGenre
 import com.vui.vaporwave.ui.AppDestination
 import com.vui.vaporwave.ui.LibraryDetail
 import com.vui.vaporwave.ui.LibraryTab
@@ -159,6 +164,7 @@ class MainActivity : ComponentActivity() {
             val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
             val useMaterialYou by viewModel.useMaterialYou.collectAsStateWithLifecycle()
             val useOledBlack by viewModel.useOledBlack.collectAsStateWithLifecycle()
+            val customTheme by viewModel.customTheme.collectAsStateWithLifecycle()
             val systemInDarkTheme = isSystemInDarkTheme()
             val effectiveDarkTheme = when (themeMode) {
                 ThemeMode.SYSTEM -> systemInDarkTheme
@@ -182,7 +188,8 @@ class MainActivity : ComponentActivity() {
                 darkTheme = effectiveDarkTheme,
                 useVaporwaveTheme = useVaporwaveTheme,
                 useDynamicColor = useMaterialYou,
-                useOledBlack = useOledBlack
+                useOledBlack = useOledBlack,
+                customColor = customTheme.colorFor(effectiveDarkTheme)
             ) {
                 // Fills the whole window with the theme's background first, so both the
                 // reachability pull's reveal gap and any pre-composition frame show the
@@ -394,6 +401,11 @@ class MainActivity : ComponentActivity() {
         val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
         val useMaterialYou by viewModel.useMaterialYou.collectAsStateWithLifecycle()
         val useOledBlack by viewModel.useOledBlack.collectAsStateWithLifecycle()
+        val useArtworkColors by viewModel.useArtworkColors.collectAsStateWithLifecycle()
+        val customTheme by viewModel.customTheme.collectAsStateWithLifecycle()
+        val recentColors by viewModel.recentColors.collectAsStateWithLifecycle()
+        val artworkColorsNoteVisible by viewModel.artworkColorsNoteVisible.collectAsStateWithLifecycle()
+        var showColourPicker by remember { mutableStateOf(false) }
         val skipSplashScreen by viewModel.skipSplashScreen.collectAsStateWithLifecycle()
         val isEffectivelyDark = when (themeMode) {
             ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -403,6 +415,8 @@ class MainActivity : ComponentActivity() {
         val favouriteTrackIds by viewModel.favouriteTrackIds.collectAsStateWithLifecycle()
         val favouriteTracks by viewModel.favouriteTracks.collectAsStateWithLifecycle()
         val albums by viewModel.albums.collectAsStateWithLifecycle()
+        val queue by viewModel.queue.collectAsStateWithLifecycle()
+        val genres by viewModel.genres.collectAsStateWithLifecycle()
         val artists by viewModel.artists.collectAsStateWithLifecycle()
         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
         val playlistPickerTarget by viewModel.playlistPickerTarget.collectAsStateWithLifecycle()
@@ -532,10 +546,47 @@ class MainActivity : ComponentActivity() {
         // anywhere else, so it can only ever apply to that one hand-off.
         var returnToNowPlayingFrom by remember { mutableStateOf<AppDestination?>(null) }
         var destinationBeforeNowPlayingJump by remember { mutableStateOf(AppDestination.LIBRARY) }
+        // Same idea for Album/Artist (the library-detail stack depth when Now Playing handed off)
+        // and Track Details: back out of them returns to Now Playing.
+        var returnToNowPlayingDetailDepth by remember { mutableStateOf<Int?>(null) }
+        var returnToNowPlayingFromTrackDetails by remember { mutableStateOf(false) }
+        // Search stays open (query and all) while FX Studio / Settings are shown from Now Playing,
+        // but hidden -- otherwise those pages would appear underneath its full-screen card.
+        var searchParkedForNowPlayingJump by remember { mutableStateOf(false) }
+        // Bringing the parked search back re-creates its card, which would normally grab focus (and
+        // raise the keyboard) the way a freshly opened search does -- not wanted on the way back.
+        var searchSkipAutoFocus by remember { mutableStateOf(false) }
+        fun unparkSearch() {
+            if (searchParkedForNowPlayingJump) {
+                searchSkipAutoFocus = true
+                searchParkedForNowPlayingJump = false
+            }
+        }
+        LaunchedEffect(isSearchOpen) { if (!isSearchOpen) searchSkipAutoFocus = false }
+        val npKeyboardController = LocalSoftwareKeyboardController.current
+        val npFocusManager = LocalFocusManager.current
+        // FX Studio / Settings opened from Now Playing while an album/artist/playlist page is open
+        // would otherwise appear *underneath* that page's full-screen overlay. The stack is parked
+        // here while they're shown and put back when going back to Now Playing.
+        var parkedLibraryDetailStack by remember { mutableStateOf<List<LibraryDetail>>(emptyList()) }
+        // Once Now Playing is open again (by any route) none of those hand-offs is pending.
+        LaunchedEffect(isNowPlayingExpanded) {
+            if (isNowPlayingExpanded) {
+                // Opening Now Playing from search (e.g. right after tapping a recent search) would
+                // otherwise leave the keyboard up over it.
+                npKeyboardController?.hide()
+                npFocusManager.clearFocus()
+                returnToNowPlayingFrom = null
+                returnToNowPlayingDetailDepth = null
+                returnToNowPlayingFromTrackDetails = false
+            }
+        }
         LaunchedEffect(destination) {
             if (returnToNowPlayingFrom != null && destination != returnToNowPlayingFrom) {
                 returnToNowPlayingFrom = null
             }
+            // Search can only have been opened from the Library, so being back there ends the parking.
+            if (destination == AppDestination.LIBRARY) unparkSearch()
         }
 
         BackHandler(enabled = isNowPlayingExpanded) {
@@ -561,10 +612,18 @@ class MainActivity : ComponentActivity() {
         // render on top of this overlay -- without the guard, back would skip straight past them
         // to the library detail beneath instead of closing the one actually on screen.
         BackHandler(
-            enabled = libraryDetailStack.isNotEmpty() && !isSearchOpen && !isNowPlayingExpanded &&
+            // Not gated on search being closed: an album/artist/genre page opened from Now Playing
+            // while search was open sits *above* it, so back has to close that page first.
+            enabled = libraryDetailStack.isNotEmpty() && !isNowPlayingExpanded &&
                 trackDetailsTarget == null && metadataEditTarget == null
         ) {
+            val returnDepth = returnToNowPlayingDetailDepth
+            val sizeAfterClose = libraryDetailStack.size - 1
             viewModel.closeLibraryDetail()
+            if (returnDepth != null && sizeAfterClose <= returnDepth) {
+                returnToNowPlayingDetailDepth = null
+                viewModel.setNowPlayingExpanded(true)
+            }
         }
 
         // Track Details and the Metadata Editor both draw on top of the library detail overlay
@@ -576,6 +635,10 @@ class MainActivity : ComponentActivity() {
         }
         BackHandler(enabled = trackDetailsTarget != null && metadataEditTarget == null && !isNowPlayingExpanded) {
             viewModel.closeTrackDetails()
+            if (returnToNowPlayingFromTrackDetails) {
+                returnToNowPlayingFromTrackDetails = false
+                viewModel.setNowPlayingExpanded(true)
+            }
         }
 
         // Any Library tab other than Tracks is a peer tab, not a screen pushed on top of
@@ -612,11 +675,14 @@ class MainActivity : ComponentActivity() {
         // Registered after the generic peer-page handler above so it wins while it applies.
         BackHandler(
             enabled = returnToNowPlayingFrom != null && destination == returnToNowPlayingFrom &&
-                !isSearchOpen && !isNowPlayingExpanded && libraryDetailStack.isEmpty() &&
+                (!isSearchOpen || searchParkedForNowPlayingJump) && !isNowPlayingExpanded && libraryDetailStack.isEmpty() &&
                 trackDetailsTarget == null && metadataEditTarget == null
         ) {
             returnToNowPlayingFrom = null
             viewModel.setDestination(destinationBeforeNowPlayingJump)
+            viewModel.setLibraryDetailStack(parkedLibraryDetailStack)
+            parkedLibraryDetailStack = emptyList()
+            unparkSearch()
             viewModel.setNowPlayingExpanded(true)
         }
 
@@ -759,6 +825,13 @@ class MainActivity : ComponentActivity() {
                         onToggleMaterialYou = {},
                         useOledBlack = useOledBlack,
                         onToggleOledBlack = {},
+                        useArtworkColors = useArtworkColors,
+                        onToggleArtworkColors = {},
+                        customThemeColor = null,
+                        otherModeHasCustomColor = false,
+                        onOpenColourPicker = {},
+                        artworkColorsNoteVisible = false,
+                        onDismissArtworkColorsNote = {},
                         skipSplashScreen = skipSplashScreen,
                         onToggleSkipSplashScreen = {},
                         isEffectivelyDark = isEffectivelyDark,
@@ -791,6 +864,7 @@ class MainActivity : ComponentActivity() {
                                 searchQuery = searchQuery,
                                 favouriteTracks = favouriteTracks,
                                 albums = albums,
+                                genres = genres,
                                 artists = artists,
                                 playlists = playlists,
                                 recentlyAddedTracks = recentlyAddedTracks,
@@ -803,9 +877,14 @@ class MainActivity : ComponentActivity() {
                                 onOpenFileClick = onPickAudioFile,
                                 onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
                                 onOpenAlbum = { name -> viewModel.openLibraryDetail(LibraryDetail.Album(name)) },
+                                onOpenGenre = { name -> viewModel.openLibraryDetail(LibraryDetail.Genre(name)) },
                                 onOpenArtist = { name -> viewModel.openLibraryDetail(LibraryDetail.Artist(name)) },
                                 onOpenPlaylist = { id -> viewModel.openLibraryDetail(LibraryDetail.PlaylistDetail(id)) },
                                 onOpenSpotlight = { category -> viewModel.openLibraryDetail(LibraryDetail.Spotlight(category)) },
+                                onAddToQueue = { track ->
+                                    viewModel.addToQueue(track)
+                                    Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+                                },
                                 onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                 onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                 reachabilityPullProgress = pullProgressState.floatValue,
@@ -870,6 +949,13 @@ class MainActivity : ComponentActivity() {
                                     onToggleMaterialYou = { viewModel.setUseMaterialYou(it) },
                                     useOledBlack = useOledBlack,
                                     onToggleOledBlack = { viewModel.setUseOledBlack(it) },
+                                    useArtworkColors = useArtworkColors,
+                                    onToggleArtworkColors = { viewModel.setUseArtworkColors(it) },
+                                    customThemeColor = customTheme.colorFor(isEffectivelyDark),
+                                    otherModeHasCustomColor = customTheme.colorFor(!isEffectivelyDark) != null,
+                                    onOpenColourPicker = { showColourPicker = true },
+                                    artworkColorsNoteVisible = artworkColorsNoteVisible,
+                                    onDismissArtworkColorsNote = { viewModel.dismissArtworkColorsNote() },
                                     skipSplashScreen = skipSplashScreen,
                                     onToggleSkipSplashScreen = { viewModel.setSkipSplashScreen(it) },
                                     isEffectivelyDark = isEffectivelyDark,
@@ -882,6 +968,31 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+
+        // "Now Playing keeps using album art colours" note: counts a showing when Settings is on screen
+        // while a custom theme colour is active alongside Album Art Colors.
+        val customColorActive = useArtworkColors && !useVaporwaveTheme &&
+            !(useMaterialYou && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) &&
+            (customTheme.lightColor != null || customTheme.darkColor != null)
+        LaunchedEffect(customColorActive, destination) {
+            viewModel.updateArtworkColorsNote(
+                active = customColorActive,
+                onSettings = destination == AppDestination.SETTINGS
+            )
+        }
+
+        if (showColourPicker) {
+            ColourPickerDialog(
+                initial = customTheme,
+                startOnDark = isEffectivelyDark,
+                recentColors = recentColors,
+                onUse = { settings ->
+                    viewModel.saveCustomTheme(settings)
+                    showColourPicker = false
+                },
+                onDismiss = { showColourPicker = false }
+            )
         }
 
         // Playlist Picker Dialog (opened via the + button on Now Playing)
@@ -912,7 +1023,7 @@ class MainActivity : ComponentActivity() {
         // of inheriting Scaffold's innerPadding (topBar and mini player height) -- mixing the
         // two was the source of the double-reservation bugs the previous version had.
         AnimatedVisibility(
-            visible = isSearchOpen,
+            visible = isSearchOpen && !searchParkedForNowPlayingJump,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
@@ -923,6 +1034,7 @@ class MainActivity : ComponentActivity() {
                 isPlaying = isPlaying,
                 progress = progressProvider,
                 openSequence = searchOpenSequence,
+                autoFocus = !searchSkipAutoFocus,
                 searchHistory = searchHistory,
                 onQueryChange = { viewModel.setSearchQuery(it) },
                 onHistoryEntryClick = { viewModel.setSearchQuery(it) },
@@ -930,6 +1042,8 @@ class MainActivity : ComponentActivity() {
                 onClearHistory = { viewModel.clearSearchHistory() },
                 onTrackClick = { track -> viewModel.playTrack(track, tracks) },
                 onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                onAddToQueue = { track -> viewModel.addToQueue(track) },
                 onBack = { viewModel.closeSearch() },
                 onPlayPauseClick = { viewModel.togglePlayPause() },
                 onSkipNextClick = { viewModel.skipToNext() },
@@ -1025,7 +1139,10 @@ class MainActivity : ComponentActivity() {
                 ) { animatedShape ->
                 val detail = animatedShape.lastOrNull()?.let { detailByIdentity[it] }
                 if (detail != null) {
-                    saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
+                    // Depth is part of the key: the same page can legitimately be on the stack twice (e.g. an
+                    // artist's page, then that same artist opened again from Now Playing), and the exiting
+                    // and entering slots would otherwise share one key and crash.
+                    saveableStateHolder.SaveableStateProvider(key = "${animatedShape.size}:${detail.stackIdentity()}") {
                     Box(modifier = Modifier.fillMaxSize()) {
                         // The MiniPlayer below is a sibling of the screen's own list rather than
                         // wired through a Scaffold's innerPadding (see the comment above this
@@ -1060,6 +1177,10 @@ class MainActivity : ComponentActivity() {
                                     onTrackClick = { track -> viewModel.playTrack(track, artistTracks) },
                                     onOpenAlbum = { albumName -> viewModel.openLibraryDetail(LibraryDetail.Album(albumName)) },
                                     onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                                    onAddToQueue = { track ->
+                                        viewModel.addToQueue(track)
+                                        Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+                                    },
                                     onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     bottomContentPadding = miniPlayerHeight,
@@ -1092,6 +1213,7 @@ class MainActivity : ComponentActivity() {
                                                 LibrarySortOption.LONGEST
                                             ),
                                             groupByDisc = true,
+                                            splitInLandscape = true,
                                             onEditMetadata = {
                                                 viewModel.openMetadataEditor(
                                                     MetadataEditTarget.Album(
@@ -1118,6 +1240,7 @@ class MainActivity : ComponentActivity() {
                                             showToolbar = true,
                                             heroArtwork = HeroArtwork(artworkUri, Icons.AutoMirrored.Filled.QueueMusic),
                                             showTrackDuration = true,
+                                            splitInLandscape = true,
                                             onEditPlaylistArtwork = {
                                                 viewModel.openArtworkPicker(detail.playlistId)
                                             }
@@ -1141,6 +1264,21 @@ class MainActivity : ComponentActivity() {
                                             }
                                         )
                                     }
+                                    is LibraryDetail.Genre -> {
+                                        val genreTracks = allTracks.filter { it.isInGenre(detail.name) }
+                                        val artworkUri = genres.find { it.name.equals(detail.name, ignoreCase = true) }?.artworkUri
+                                        val totalMs = genreTracks.sumOf { it.durationMs }
+                                        LibraryDetailPayload(
+                                            title = detail.name,
+                                            subtitle = "${genreTracks.size} songs • ${formatTotalDuration(totalMs)}",
+                                            tracks = genreTracks,
+                                            showToolbar = true,
+                                            heroArtwork = HeroArtwork(artworkUri, Icons.Default.Category),
+                                            splitInLandscape = true,
+                                            // An A-Z scrollbar once the genre's tracks start with more than 10 letters.
+                                            alphabetScrollbarOverLetters = 10
+                                        )
+                                    }
                                     is LibraryDetail.Artist -> error("handled above")
                                 }
                                 DetailTrackList(
@@ -1156,6 +1294,12 @@ class MainActivity : ComponentActivity() {
                                     showTrackArtwork = payload.showTrackArtwork,
                                     availableSortOptions = payload.availableSortOptions,
                                     groupByDisc = payload.groupByDisc,
+                                    splitInLandscape = payload.splitInLandscape,
+                                    alphabetScrollbarOverLetters = payload.alphabetScrollbarOverLetters,
+                                    onAddToQueue = { track ->
+                                        viewModel.addToQueue(track)
+                                        Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+                                    },
                                     onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     onEditMetadata = payload.onEditMetadata,
@@ -1333,6 +1477,17 @@ class MainActivity : ComponentActivity() {
                 isFavourite = currentTrack?.id in favouriteTrackIds,
                 onToggleFavourite = { currentTrack?.let { viewModel.toggleFavourite(it.id) } },
                 onAddToPlaylist = { currentTrack?.let { viewModel.openPlaylistPicker(it) } },
+                queue = queue,
+                useArtworkColors = useArtworkColors && !useVaporwaveTheme &&
+                    !(useMaterialYou && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S),
+                // Neon, Material You or a custom colour is theming the app: the art's glow takes its
+                // colours instead of the default pink and cyan.
+                useThemeGlow = useVaporwaveTheme ||
+                    (useMaterialYou && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) ||
+                    customTheme.colorFor(isEffectivelyDark) != null,
+                onQueueEntryClick = { position -> viewModel.playQueueEntry(position) },
+                onQueueMove = { from, to -> viewModel.moveQueueItem(from, to) },
+                onQueueOpened = { viewModel.ensureQueueLoaded() },
                 isOneHandedModeEnabled = isOneHandedModeLocked,
                 onToggleOneHandedMode = {
                     val newLocked = !isOneHandedModeLocked
@@ -1351,30 +1506,48 @@ class MainActivity : ComponentActivity() {
                 onOpenEffects = {
                     destinationBeforeNowPlayingJump = destination
                     returnToNowPlayingFrom = AppDestination.EFFECTS
+                    if (isSearchOpen) searchParkedForNowPlayingJump = true
+                    parkedLibraryDetailStack = libraryDetailStack
+                    viewModel.setLibraryDetailStack(emptyList())
+                    viewModel.closeTrackDetails()
                     viewModel.setNowPlayingExpanded(false)
-                    viewModel.closeSearch()
                     viewModel.setDestination(AppDestination.EFFECTS)
                 },
                 onOpenAlbum = {
                     currentTrack?.let {
+                        returnToNowPlayingDetailDepth = libraryDetailStack.size
                         viewModel.setNowPlayingExpanded(false)
                         viewModel.openLibraryDetail(LibraryDetail.Album(it.album))
                     }
                 },
                 onOpenArtist = {
                     currentTrack?.let {
+                        returnToNowPlayingDetailDepth = libraryDetailStack.size
                         viewModel.setNowPlayingExpanded(false)
                         viewModel.openLibraryDetail(LibraryDetail.Artist(it.artist))
+                    }
+                },
+                // Opens the track's (first) genre -- same hand-off as Album/Artist, so back returns here.
+                onOpenGenre = {
+                    currentTrack?.let {
+                        returnToNowPlayingDetailDepth = libraryDetailStack.size
+                        viewModel.setNowPlayingExpanded(false)
+                        viewModel.openLibraryDetail(LibraryDetail.Genre(it.genres.firstOrNull() ?: UNKNOWN_GENRE))
                     }
                 },
                 onOpenSettings = {
                     destinationBeforeNowPlayingJump = destination
                     returnToNowPlayingFrom = AppDestination.SETTINGS
+                    if (isSearchOpen) searchParkedForNowPlayingJump = true
+                    parkedLibraryDetailStack = libraryDetailStack
+                    viewModel.setLibraryDetailStack(emptyList())
+                    viewModel.closeTrackDetails()
                     viewModel.setNowPlayingExpanded(false)
                     viewModel.setDestination(AppDestination.SETTINGS)
                 },
                 onOpenTrackDetails = {
                     currentTrack?.let {
+                        returnToNowPlayingFromTrackDetails = true
                         viewModel.setNowPlayingExpanded(false)
                         viewModel.openTrackDetails(it)
                     }
@@ -1392,6 +1565,7 @@ class MainActivity : ComponentActivity() {
 private fun LibraryDetail.stackIdentity(): Any = when (this) {
     is LibraryDetail.Album -> "album:$name"
     is LibraryDetail.Artist -> "artist:$name"
+    is LibraryDetail.Genre -> "genre:$name"
     is LibraryDetail.PlaylistDetail -> "playlist:$playlistId"
     is LibraryDetail.Spotlight -> "spotlight:${category.name}"
 }
@@ -1421,6 +1595,8 @@ private data class LibraryDetailPayload(
         LibrarySortOption.ARTIST
     ),
     val groupByDisc: Boolean = false,
+    val splitInLandscape: Boolean = false,
+    val alphabetScrollbarOverLetters: Int? = null,
     val onEditMetadata: (() -> Unit)? = null,
     val onEditPlaylistArtwork: (() -> Unit)? = null,
     val favouriteTracks: List<AudioTrack>? = null,

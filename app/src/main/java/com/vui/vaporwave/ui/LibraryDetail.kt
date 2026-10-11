@@ -19,6 +19,7 @@ enum class SpotlightCategory(val label: String) {
 sealed class LibraryDetail {
     data class Album(val name: String) : LibraryDetail()
     data class Artist(val name: String) : LibraryDetail()
+    data class Genre(val name: String) : LibraryDetail()
     data class PlaylistDetail(val playlistId: Long) : LibraryDetail()
     data class Spotlight(val category: SpotlightCategory) : LibraryDetail()
 }

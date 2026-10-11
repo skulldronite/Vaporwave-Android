@@ -1,5 +1,16 @@
 package com.vui.vaporwave.ui.components
 
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.material.icons.filled.Category
+import com.vui.vaporwave.ui.rememberArtworkAccent
+import androidx.compose.ui.graphics.lerp
+import androidx.activity.compose.BackHandler
+import com.vui.vaporwave.model.QueueEntry
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import android.widget.Toast
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -166,6 +177,16 @@ fun NowPlayingSheet(
     isFavourite: Boolean,
     onToggleFavourite: () -> Unit,
     onAddToPlaylist: () -> Unit,
+    /** The playback queue in play order -- shown in place of the album art when its button is toggled. */
+    queue: List<QueueEntry>,
+    onQueueEntryClick: (position: Int) -> Unit,
+    onQueueMove: (from: Int, to: Int) -> Unit,
+    /** Called when the queue panel is opened, so a cold-launch (empty) queue can be filled first. */
+    onQueueOpened: () -> Unit,
+    /** Tint the glow, play button and active toggles with the artwork's colour (false: theme colours). */
+    useArtworkColors: Boolean,
+    /** Neon / Material You / a custom colour is active: the glow takes the theme's colours, not pink and cyan. */
+    useThemeGlow: Boolean,
     /** Whether the shared reachability pull (see [ReachabilityPullBox]) is currently forced fully open. */
     isOneHandedModeEnabled: Boolean,
     onToggleOneHandedMode: () -> Unit,
@@ -181,6 +202,7 @@ fun NowPlayingSheet(
     onOpenEffects: () -> Unit,
     onOpenAlbum: () -> Unit,
     onOpenArtist: () -> Unit,
+    onOpenGenre: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTrackDetails: () -> Unit,
     onShare: () -> Unit,
@@ -200,6 +222,15 @@ fun NowPlayingSheet(
     var isOverflowMenuExpanded by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showLyrics by remember { mutableStateOf(false) }
+    var showQueue by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showQueue) { if (showQueue) onQueueOpened() }
+
+    // Back peels off the top layer first -- the queue, then lyrics -- before the sheet itself
+    // closes (MainActivity's own handler, which this one takes priority over while enabled).
+    BackHandler(enabled = showQueue || (showLyrics && lyrics != null)) {
+        if (showQueue) showQueue = false else showLyrics = false
+    }
     // Back to album art on every track change, rather than carrying "showing lyrics" over onto
     // whatever plays next.
     LaunchedEffect(track.id) { showLyrics = false }
@@ -226,6 +257,42 @@ fun NowPlayingSheet(
     }
 
     val isLandscape = rememberIsLandscape()
+
+    // The artwork's own colour drives the glow, play button and active toggles -- unless the
+    // setting is off, or Neon / Material You is overriding the palette (the caller folds that
+    // into [useArtworkColors]), in which case it's the theme's primary as before.
+    // Always extracted: the glow takes the artwork's colour whatever the settings or theme say. Only
+    // the other elements (play button, toggles, seek bar) depend on [useArtworkColors].
+    val artworkAccent = rememberArtworkAccent(track.artworkUri, true)
+    val accent by animateColorAsState(
+        targetValue = if (useArtworkColors) artworkAccent ?: MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary,
+        label = "np_accent"
+    )
+    val onAccent = if (accent.luminance() > 0.5f) Color.Black else Color.White
+    val usingArtworkAccent = useArtworkColors && artworkAccent != null
+    // The glow's colour: always the artwork's; failing that the theme's own (Neon's pink, Material You's or
+    // the custom colour's primary), else the default pink and cyan. The theme's secondary isn't used: in a
+    // generated palette it's a muted grey, which turned the strongest part of the glow colourless.
+    val themePrimary = MaterialTheme.colorScheme.primary
+    val isLightSurface = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    // The artwork's own colour; only artwork with no usable colour (greyscale, or none) falls back.
+    val glowBase: Color? = when {
+        artworkAccent != null -> artworkAccent
+        useThemeGlow -> themePrimary
+        else -> null
+    }
+    // On a light background a glow has to be much more saturated to be seen at all, so in light mode
+    // the colour is pushed to a vivid, mid-bright version of itself.
+    fun vivid(color: Color): Color {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(color.toArgb(), hsv)
+        hsv[1] = hsv[1].coerceAtLeast(0.62f)
+        hsv[2] = hsv[2].coerceIn(0.6f, 0.92f)
+        return Color(android.graphics.Color.HSVToColor(hsv))
+    }
+    val glowAmbientColor = (glowBase ?: VaporPink).let { if (isLightSurface) vivid(it) else it }
+    val glowSpotColor = (glowBase?.let { lerp(it, Color.White, 0.35f) } ?: VaporCyan)
+        .let { if (isLightSurface) vivid(glowBase ?: VaporCyan) else it }
 
     // The sheet's sections are lambdas so portrait (one scrolling column) and landscape (artwork
     // and title on the left, everything else on the right) lay out the very same content.
@@ -262,6 +329,7 @@ fun NowPlayingSheet(
                 }) {
                     VolumeLevelIcon(
                         level = when {
+                            volumeState.volumePercent <= 0 -> 0
                             volumeState.volumePercent <= 30 -> 1
                             volumeState.volumePercent <= 70 -> 2
                             else -> 3
@@ -319,6 +387,14 @@ fun NowPlayingSheet(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text("Genres") },
+                            leadingIcon = { Icon(Icons.Default.Category, contentDescription = null) },
+                            onClick = {
+                                isOverflowMenuExpanded = false
+                                onOpenGenre()
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Share") },
                             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                             onClick = {
@@ -368,30 +444,79 @@ fun NowPlayingSheet(
             label = "art_glow_envelope"
         )
         val glowElevation = 10.dp + 18.dp * glowPulse * playingEnvelope
+        val panelCoverProgress = animateFloatAsState(
+            targetValue = if (showQueue || (showLyrics && lyrics != null)) 1f else 0f,
+            animationSpec = tween(300),
+            label = "art_panel_cover"
+        )
 
         Box(
             modifier = artSizeModifier
-                .shadow(
-                    // Colored ambient/spot shadows need a multi-pass fragment shader; keeping
-                    // elevation modest avoids GPU pipeline stalls during sheet drag gestures.
-                    elevation = glowElevation,
-                    shape = RoundedCornerShape(24.dp),
-                    ambientColor = VaporPink,
-                    spotColor = VaporCyan
+                .then(
+                    if (isLandscape || isLightSurface) {
+                        // Android's drop shadow is lit from a fixed point at the top centre of the
+                        // *screen*, so its coloured "spot" part is thrown away from that point. In
+                        // portrait the art sits right under it and it falls evenly left/right/bottom;
+                        // in landscape the art is off to the left, so the glow only showed on the left
+                        // and bottom. This draws the same look itself instead, centred on the art:
+                        // soft rounded rings growing outward, each a little fainter than the last.
+                        Modifier.drawBehind {
+                            val pulse = glowPulse * playingEnvelope
+                            // Portrait's shadow at its peak: a faint, wide, smoothly fading haze that is
+                            // mostly the cool "spot" colour (a touch of the warm ambient one far out), with no
+                            // distinct bright edge. It swells while playing and settles back against the art.
+                            val spread = (if (isLightSurface) 4.dp + 20.dp * pulse else 3.dp + 17.dp * pulse).toPx()
+                            val corner = 24.dp.toPx()
+                            val ambientColor = glowAmbientColor
+                            val spotColor = glowSpotColor
+                            val rings = 24
+                            val step = spread / rings
+                            for (i in 0 until rings) {
+                                val t = (i + 0.5f) / rings
+                                val g = spread * t
+                                // Smooth falloff, strongest against the art, gone at the outer edge.
+                                val fade = (1f - t)
+                                // A light background needs a far stronger, broader glow to show up.
+                                val alpha = if (isLightSurface) 0.42f * fade * fade else 0.22f * fade * fade * fade
+                                drawRoundRect(
+                                    color = lerp(spotColor, ambientColor, t * 0.3f).copy(alpha = alpha),
+                                    topLeft = Offset(-g, -g * 0.25f),
+                                    size = Size(size.width + 2f * g, size.height + g * 1.5f),
+                                    cornerRadius = CornerRadius(corner + g),
+                                    style = Stroke(width = step * 1.15f)
+                                )
+                            }
+                        }
+                    } else {
+                        Modifier.shadow(
+                            // Colored ambient/spot shadows need a multi-pass fragment shader; keeping
+                            // elevation modest avoids GPU pipeline stalls during sheet drag gestures.
+                            elevation = glowElevation,
+                            shape = RoundedCornerShape(24.dp),
+                            ambientColor = glowAmbientColor,
+                            spotColor = glowSpotColor
+                        )
+                    }
                 )
                 .clip(RoundedCornerShape(24.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            VaporPink.copy(alpha = 0.85f),
-                            VaporCyan.copy(alpha = 0.85f),
-                            VaporMint.copy(alpha = 0.85f)
-                        )
+                // Fades out while lyrics or the queue cover the art: otherwise this gradient shows
+                // through the antialiased rounded corners as a thin tinted rim, and the panel looks
+                // like it doesn't quite reach them.
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            listOf(
+                                VaporPink.copy(alpha = 0.85f),
+                                VaporCyan.copy(alpha = 0.85f),
+                                VaporMint.copy(alpha = 0.85f)
+                            )
+                        ),
+                        alpha = 1f - panelCoverProgress.value
                     )
-                )
+                }
                 // Tapping toggles synced lyrics over the artwork -- a no-op when this track
                 // has none, per the feature's own spec, rather than showing an empty view.
-                .clickable(enabled = lyrics != null) { showLyrics = !showLyrics },
+                .clickable(enabled = lyrics != null && !showQueue) { showLyrics = !showLyrics },
             contentAlignment = Alignment.Center
         ) {
             val artworkPlaceholder: @Composable () -> Unit = {
@@ -478,7 +603,7 @@ fun NowPlayingSheet(
                 }
             }
 
-            if (lyrics != null && !showLyrics) {
+            if (lyrics != null && !showLyrics && !showQueue) {
                 Text(
                     text = if (lyrics is LyricsResult.Synced) "Synced Lyrics" else "Lyrics",
                     style = MaterialTheme.typography.labelSmall,
@@ -489,6 +614,40 @@ fun NowPlayingSheet(
                         .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 )
+            }
+
+            // The queue replaces the artwork (and lyrics) while it's open, in the same square.
+            // Same crossfade the lyrics view uses.
+            Crossfade(targetState = showQueue, label = "artwork_queue") { queueOpen ->
+                if (queueOpen) {
+                    QueuePanel(
+                        entries = queue,
+                        onEntryClick = onQueueEntryClick,
+                        onMove = onQueueMove,
+                        isShuffle = isShuffle,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            // Bottom-right of the artwork: toggles the queue panel.
+            Surface(
+                onClick = { showQueue = !showQueue },
+                shape = CircleShape,
+                color = if (showQueue) MaterialTheme.colorScheme.primary else Color.Black,
+                contentColor = if (showQueue) MaterialTheme.colorScheme.onPrimary else Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(10.dp)
+                    .size(34.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = if (showQueue) "Hide queue" else "Show queue",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
@@ -546,7 +705,7 @@ fun NowPlayingSheet(
                     modifier = Modifier.align(Alignment.CenterEnd)
                 ) {
                     OneHandedModeIcon(
-                        tint = if (isOneHandedModeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (isOneHandedModeEnabled) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -651,7 +810,8 @@ fun NowPlayingSheet(
         SeekSection(
             positionProvider = positionProvider,
             durationMs = durationMs,
-            onSeekTo = onSeekTo
+            onSeekTo = onSeekTo,
+            accent = accent
         )
 
         Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 16.dp))
@@ -670,7 +830,7 @@ fun NowPlayingSheet(
             // the opposite side and returning.
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 val shuffleTint by animateColorAsState(
-                    targetValue = if (isShuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    targetValue = if (isShuffle) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                     label = "shuffle_tint"
                 )
                 val shuffleFlip = remember { Animatable(0f) }
@@ -748,13 +908,13 @@ fun NowPlayingSheet(
                     },
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            ) {
-                MorphingPlayPauseIcon(
-                    isPlaying = isPlaying,
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                                            containerColor = accent,
+                        contentColor = onAccent
+                    )
+                ) {
+                    MorphingPlayPauseIcon(
+                        isPlaying = isPlaying,
+                        tint = onAccent,
                     modifier = Modifier.size(if (isLandscape) 26.dp else 30.dp)
                 )
             }
@@ -798,7 +958,7 @@ fun NowPlayingSheet(
             // fades the ring back out -- see [RepeatModeIcon].
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 val repeatTint by animateColorAsState(
-                    targetValue = if (repeatMode != Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    targetValue = if (repeatMode != Player.REPEAT_MODE_OFF) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                     label = "repeat_tint"
                 )
                 BouncyIconButton(onClick = onToggleRepeat) {
@@ -1216,6 +1376,13 @@ private fun VolumeLevelIcon(level: Int, tint: Color, modifier: Modifier = Modifi
     val bar1Alpha by animateFloatAsState(if (level >= 1) 1f else 0.25f, label = "vol_bar1")
     val bar2Alpha by animateFloatAsState(if (level >= 2) 1f else 0.25f, label = "vol_bar2")
     val bar3Alpha by animateFloatAsState(if (level >= 3) 1f else 0.25f, label = "vol_bar3")
+    // 0 = the sound bars, 1 = a muted "X". At zero volume the bars physically morph into the X (and
+    // back out again when the volume returns), rather than fading between two different glyphs.
+    val muteProgress = animateFloatAsState(
+        targetValue = if (level == 0) 1f else 0f,
+        animationSpec = tween(380, easing = FastOutSlowInEasing),
+        label = "vol_mute"
+    )
 
     Canvas(modifier = modifier.size(30.dp)) {
         val w = size.width
@@ -1234,20 +1401,55 @@ private fun VolumeLevelIcon(level: Int, tint: Color, modifier: Modifier = Modifi
         }
         drawPath(cone, color = tint)
 
+        val m = muteProgress.value
         val center = Offset(w * 0.46f, h * 0.5f)
-        val barAlphas = listOf(bar1Alpha, bar2Alpha, bar3Alpha)
+        val xCenter = Offset(w * 0.72f, h * 0.5f)
         val strokeWidth = w * 0.05f
-        barAlphas.forEachIndexed { index, alpha ->
-            val radius = w * (0.14f + index * 0.10f)
-            drawArc(
-                color = tint.copy(alpha = alpha),
-                startAngle = -45f,
-                sweepAngle = 90f,
-                useCenter = false,
-                topLeft = Offset(center.x - radius, center.y - radius),
-                size = Size(radius * 2, radius * 2),
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        val samples = 18
+
+        // Each bar is a polyline of points along its arc. Morphing is just sliding every point toward
+        // its place on the X: the outer bar straightens into one stroke of the X, the middle bar into
+        // the other, and the inner bar shrinks to nothing at the X's centre.
+        fun arcPoint(radius: Float, t: Float): Offset {
+            val angle = Math.toRadians((-45.0 + 90.0 * t))
+            return Offset(
+                center.x + radius * kotlin.math.cos(angle).toFloat(),
+                center.y + radius * kotlin.math.sin(angle).toFloat()
             )
+        }
+        fun lerpOffset(a: Offset, b: Offset, f: Float) = Offset(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f)
+
+        // A compact X, about a fifth of the icon across -- roughly the size of a normal "muted" cross.
+        val topRight = Offset(w * 0.82f, h * 0.40f)
+        val bottomLeft = Offset(w * 0.62f, h * 0.60f)
+        val topLeft = Offset(w * 0.62f, h * 0.40f)
+        val bottomRight = Offset(w * 0.82f, h * 0.60f)
+
+        val barAlphas = listOf(bar1Alpha, bar2Alpha, bar3Alpha)
+        for (index in 0..2) {
+            val radius = w * (0.14f + index * 0.10f)
+            val path = Path()
+            for (i in 0 until samples) {
+                val t = i / (samples - 1f)
+                val arc = arcPoint(radius, t)
+                val target = when (index) {
+                    2 -> lerpOffset(topRight, bottomLeft, t)
+                    1 -> lerpOffset(topLeft, bottomRight, t)
+                    else -> xCenter
+                }
+                val point = lerpOffset(arc, target, m)
+                if (i == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+            }
+            // The two bars that become the X end up fully opaque; the inner one thins away as it collapses.
+            val alpha = if (index == 0) barAlphas[index] else barAlphas[index] + (1f - barAlphas[index]) * m
+            val width = if (index == 0) strokeWidth * (1f - m) else strokeWidth
+            if (width > 0.01f) {
+                drawPath(
+                    path = path,
+                    color = tint.copy(alpha = alpha),
+                    style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
         }
     }
 }
@@ -1295,14 +1497,25 @@ private fun LyricsView(
     ) {
         itemsIndexed(lines) { index, line ->
             val isActive = index == activeIndex
+            // Every line keeps the exact same text style, so a line becoming active never changes
+            // its height (or re-wraps it). Switching between two different sizes did: the list
+            // scrolls toward the active line while its own and its neighbour's heights are
+            // changing underneath that scroll, which is what made it settle with a judder at the
+            // end. Emphasis is colour and a draw-time scale instead, neither of which affects layout.
+            val emphasis by animateFloatAsState(targetValue = if (isActive) 1f else 0f, label = "lyric_emphasis")
             Text(
                 text = line.text,
-                style = if (isActive) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
-                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                color = textColor.copy(alpha = if (isActive) 1f else 0.6f),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = textColor.copy(alpha = 0.6f + 0.4f * emphasis),
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .graphicsLayer {
+                        val scale = 1f + 0.12f * emphasis
+                        scaleX = scale
+                        scaleY = scale
+                    }
                     .clickable { onSeekTo(line.timestampMs) }
                     .padding(vertical = 10.dp, horizontal = 8.dp)
             )
@@ -1338,7 +1551,8 @@ private fun PlainLyricsView(text: String, textColor: Color, modifier: Modifier =
 private fun SeekSection(
     positionProvider: () -> Long,
     durationMs: Long,
-    onSeekTo: (Long) -> Unit
+    onSeekTo: (Long) -> Unit,
+    accent: Color
 ) {
     var isUserDragging by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableFloatStateOf(0f) }
@@ -1360,8 +1574,8 @@ private fun SeekSection(
         },
         valueRange = 0f..totalDuration,
         colors = SliderDefaults.colors(
-            thumbColor = MaterialTheme.colorScheme.primary,
-            activeTrackColor = MaterialTheme.colorScheme.primary,
+            thumbColor = accent,
+            activeTrackColor = accent,
             inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
         ),
         modifier = Modifier.fillMaxWidth()

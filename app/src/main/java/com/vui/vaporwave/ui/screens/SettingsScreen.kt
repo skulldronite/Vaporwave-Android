@@ -1,5 +1,20 @@
 package com.vui.vaporwave.ui.screens
 
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.TextButton
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.expandVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.filled.ColorLens
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
@@ -57,6 +72,16 @@ fun SettingsScreen(
     onToggleMaterialYou: (Boolean) -> Unit,
     useOledBlack: Boolean,
     onToggleOledBlack: (Boolean) -> Unit,
+    useArtworkColors: Boolean,
+    onToggleArtworkColors: (Boolean) -> Unit,
+    /** The custom theme colour set for whichever mode (light/dark) is showing now, if any. */
+    customThemeColor: Int?,
+    /** Whether the *other* mode has a custom colour too -- shown as a small dot on the icon. */
+    otherModeHasCustomColor: Boolean,
+    onOpenColourPicker: () -> Unit,
+    /** The "Now Playing keeps using album art colours" note (see MusicViewModel). */
+    artworkColorsNoteVisible: Boolean,
+    onDismissArtworkColorsNote: () -> Unit,
     skipSplashScreen: Boolean,
     onToggleSkipSplashScreen: (Boolean) -> Unit,
     // Whether dark colors are actually showing right now -- resolves ThemeMode.SYSTEM against
@@ -126,6 +151,48 @@ fun SettingsScreen(
                 }
             }
             val appearanceRight: @Composable ColumnScope.() -> Unit = {
+                // Theme -- opens the colour picker. Dimmed and inert while Neon Theme or Material You
+                // is on, since either one supplies its own palette that would override the colour.
+                val customThemeLocked = useVaporwaveTheme || (materialYouAvailable && useMaterialYou)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = !customThemeLocked, onClick = onOpenColourPicker),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ColorLens,
+                        contentDescription = null,
+                        tint = if (customThemeLocked) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                        Text(
+                            text = "Theme",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Make Vaporwave yours, and make it look how you want!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    SpectrumIcon(
+                        selectedColor = customThemeColor?.let { Color(it) },
+                        otherModeSet = otherModeHasCustomColor,
+                        enabled = !customThemeLocked
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 // Neon Theme
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -138,7 +205,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                         Text(
                             text = "Neon Theme",
                             style = MaterialTheme.typography.titleMedium,
@@ -179,7 +246,7 @@ fun SettingsScreen(
                             modifier = Modifier.size(24.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                             Text(
                                 text = "Material You",
                                 style = MaterialTheme.typography.titleMedium,
@@ -220,7 +287,7 @@ fun SettingsScreen(
                                 modifier = Modifier.size(24.dp)
                             )
                             Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                                 Text(
                                     text = "OLED Theme",
                                     style = MaterialTheme.typography.titleMedium,
@@ -240,6 +307,73 @@ fun SettingsScreen(
                     }
                 }
 
+                // Album Art Colors -- Now Playing's glow, play button and active toggles take the
+                // playing song's artwork colour. Dimmed while Neon Theme or Material You is on, since
+                // either one supplies its own fixed palette and overrides it.
+                val artworkColorsLocked = useVaporwaveTheme || (materialYouAvailable && useMaterialYou)
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ColorLens,
+                        contentDescription = null,
+                        tint = if (artworkColorsLocked) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                        Text(
+                            text = "Album Art Colors",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = when {
+                                useVaporwaveTheme -> "Disabled while Neon Theme is on"
+                                materialYouAvailable && useMaterialYou -> "Disabled while Material You is on"
+                                else -> "Tints Now Playing with colors from the song's artwork"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = useArtworkColors,
+                        onCheckedChange = onToggleArtworkColors,
+                        enabled = !artworkColorsLocked
+                    )
+                }
+                AnimatedVisibility(
+                    visible = artworkColorsNoteVisible && !artworkColorsLocked && useArtworkColors,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.secondaryContainer)
+                            .padding(start = 14.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Now Playing uses the song's album art colors, not your theme color. " +
+                                "Turn Album Art Colors off to use your theme color there.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onDismissArtworkColorsNote) { Text("Got it") }
+                    }
+                }
+
                 // Skip Intro Animation -- always shown (unlike OLED Theme above, not tied to
                 // dark/light), so it isn't wrapped in that AnimatedVisibility.
                 Spacer(modifier = Modifier.height(16.dp))
@@ -254,14 +388,14 @@ fun SettingsScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                         Text(
                             text = "Skip Intro Animation",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Go straight to your library — skips the neon intro on launch",
+                            text = "Go straight to your library, skips the intro splash screen",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -313,7 +447,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                         Text(
                             text = "Media Library Scan",
                             style = MaterialTheme.typography.titleMedium,
@@ -361,7 +495,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                         Text(
                             text = "Lyrics Folder Access",
                             style = MaterialTheme.typography.titleMedium,
@@ -436,6 +570,34 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * A colour-wheel icon: a rainbow ring, filled in the middle with the chosen colour once there is
+ * one. A small dot at the corner means the other mode (light/dark) has a colour of its own too.
+ */
+@Composable
+private fun SpectrumIcon(selectedColor: Color?, otherModeSet: Boolean, enabled: Boolean, modifier: Modifier = Modifier) {
+    val rainbow = remember {
+        Brush.sweepGradient(listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red))
+    }
+    val outline = MaterialTheme.colorScheme.outline
+    val dotColor = MaterialTheme.colorScheme.primary
+    // The canvas is a little bigger than the wheel, with the wheel kept to its top-left, so the small
+    // "other mode" dot at the bottom-right corner has room and isn't cut off at the canvas edge.
+    Canvas(modifier = modifier.size(40.dp).graphicsLayer { alpha = if (enabled) 1f else 0.38f }) {
+        val wheelRadius = 18.dp.toPx()
+        val wheelCenter = Offset(wheelRadius, wheelRadius)
+        drawCircle(brush = rainbow, radius = wheelRadius, center = wheelCenter)
+        val inner = wheelRadius * 0.55f
+        drawCircle(color = selectedColor ?: Color.White, radius = inner, center = wheelCenter)
+        drawCircle(color = outline, radius = inner, center = wheelCenter, style = Stroke(width = 1.dp.toPx()))
+        if (otherModeSet) {
+            val dotCenter = Offset(33.dp.toPx(), 33.dp.toPx())
+            drawCircle(color = Color.Black, radius = 6.dp.toPx(), center = dotCenter)
+            drawCircle(color = dotColor, radius = 4.5.dp.toPx(), center = dotCenter)
         }
     }
 }
